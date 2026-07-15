@@ -1,0 +1,6 @@
+from apps.management.serializers.clients import ClientSerializer
+from apps.management.serializers.video_ad_slot import VideoAdSlotSerializer, VideoAdSlotCreateSerializer
+from apps.management.serializers.app_users import AppUserSerializer
+from apps.management.serializers.admin_users import AdminUserSerializer, AdminUserCreateSerializer, AdminUserUpdateSerializer
+from apps.management.serializers.notifications import NotificationSerializer
+from apps.management.serializers.settings import PlatformSettingsSerializer

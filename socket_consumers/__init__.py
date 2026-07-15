@@ -1,0 +1,1 @@
+from socket_consumers.video_stream import VideoStreamConsumer
