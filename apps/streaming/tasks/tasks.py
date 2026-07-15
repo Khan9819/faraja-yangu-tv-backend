@@ -816,6 +816,8 @@ def assemble_chunks_task(self, video_id: int, filename: str):
     """
     import tempfile
     import shutil
+
+    close_old_connections()
     
     # Initialize database update queue for async writes
     db_queue = DatabaseUpdateQueue()
@@ -853,14 +855,35 @@ def assemble_chunks_task(self, video_id: int, filename: str):
         
         chunk_dir = f"videos/chunks/{video_id}"
         
+        # Use list_objects_v2 for fast chunk discovery (avoids 1800+ individual exists() calls)
         chunk_files = []
-        chunk_index = 0
-        while True:
-            chunk_path = os.path.join(chunk_dir, f"chunk_{chunk_index:04d}")
-            if not default_storage.exists(chunk_path):
-                break
-            chunk_files.append(chunk_path)
-            chunk_index += 1
+        try:
+            if hasattr(default_storage, 'connection') and hasattr(default_storage.connection, 'meta'):
+                s3_client = default_storage.connection.meta.client
+                paginator = s3_client.get_paginator('list_objects_v2')
+                pages = paginator.paginate(Bucket=default_storage.bucket_name, Prefix=f"{chunk_dir}/")
+                for page in pages:
+                    for obj in page.get('Contents', []):
+                        chunk_files.append(obj['Key'])
+                chunk_files.sort()
+            else:
+                # Fallback: iterate with exists()
+                chunk_index = 0
+                while True:
+                    chunk_path = os.path.join(chunk_dir, f"chunk_{chunk_index:04d}")
+                    if not default_storage.exists(chunk_path):
+                        break
+                    chunk_files.append(chunk_path)
+                    chunk_index += 1
+        except Exception as e:
+            logger.warning(f"Bulk chunk listing failed, falling back to exists(): {e}")
+            chunk_index = 0
+            while True:
+                chunk_path = os.path.join(chunk_dir, f"chunk_{chunk_index:04d}")
+                if not default_storage.exists(chunk_path):
+                    break
+                chunk_files.append(chunk_path)
+                chunk_index += 1
         
         if not chunk_files:
             logger.error(f"No chunks found for video {video_id}")
@@ -917,12 +940,25 @@ def assemble_chunks_task(self, video_id: int, filename: str):
         
         send_video_progress(video_id, "assembling", 85, "Cleaning up chunks from storage...")
         
-        # Delete chunks from R2 to free up storage
-        for i, chunk_path in enumerate(chunk_files):
+        # Delete chunks from R2 in batches to avoid connection pool exhaustion
+        s3_client = default_storage.connection.meta.client
+        bucket_name = default_storage.bucket_name
+        CHUNK_BATCH = 1000
+        
+        for batch_start in range(0, total_chunks, CHUNK_BATCH):
+            batch = chunk_files[batch_start:batch_start + CHUNK_BATCH]
             try:
-                default_storage.delete(chunk_path)
+                s3_client.delete_objects(
+                    Bucket=bucket_name,
+                    Delete={'Objects': [{'Key': k} for k in batch]}
+                )
             except Exception as e:
-                logger.warning(f"Could not delete chunk {chunk_path}: {str(e)}")
+                logger.warning(f"Batch delete failed for video {video_id}, falling back to individual: {e}")
+                for chunk_path in batch:
+                    try:
+                        default_storage.delete(chunk_path)
+                    except Exception as ie:
+                        logger.warning(f"Could not delete chunk {chunk_path}: {str(ie)}")
         
         try:
             if hasattr(default_storage, 'delete'):

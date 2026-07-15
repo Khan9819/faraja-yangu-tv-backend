@@ -7,6 +7,10 @@ import sentry_sdk
 from sentry_sdk import metrics
 from sentry_sdk.integrations.django import DjangoIntegration
 
+# Configure boto3 connection pool for R2 batch operations
+from botocore.config import Config as BotoConfig
+AWS_S3_CLIENT_CONFIG = BotoConfig(max_pool_connections=50)
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 

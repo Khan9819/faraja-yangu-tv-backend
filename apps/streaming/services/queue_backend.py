@@ -24,12 +24,18 @@ class BaseQueueBackend(ABC):
 class RedisQueueBackend(BaseQueueBackend):
     def __init__(self):
         import redis as redis_lib
-        self._client = redis_lib.Redis(
+        pool = redis_lib.ConnectionPool(
             host=getattr(settings, 'REDIS_HOST', 'localhost'),
             port=int(getattr(settings, 'REDIS_PORT', 6379)),
             password=getattr(settings, 'REDIS_PASSWORD', '') or None,
             decode_responses=True,
+            max_connections=20,
+            socket_connect_timeout=5,
+            socket_timeout=5,
+            socket_keepalive=True,
+            retry_on_timeout=True,
         )
+        self._client = redis_lib.Redis(connection_pool=pool)
 
     def publish(self, queue_name: str, payload: dict) -> None:
         self._client.lpush(queue_name, json.dumps(payload))
