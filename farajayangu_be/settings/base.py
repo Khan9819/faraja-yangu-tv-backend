@@ -193,27 +193,28 @@ TEMPLATES = [
     },
 ]
 
+_is_sqlite = DATABASE_ENGINE == 'django.db.backends.sqlite3'
+
 DATABASES = {
     'default': {
         'ENGINE': DATABASE_ENGINE,
         'NAME': DATABASE_NAME,
-        'USER': DATABASE_USER,
-        'PASSWORD': DATABASE_PASSWORD,
-        'HOST': DATABASE_HOST,
-        'PORT': DATABASE_PORT,
-        # Reduced connection age for better resilience
-        'CONN_MAX_AGE': 30,
-        'OPTIONS': {
-            # Connection timeout settings - increased for network issues
-            'connect_timeout': 30,
-            # TCP keepalive settings for connection health
-            'keepalives': 1,
-            'keepalives_idle': 30,
-            'keepalives_interval': 10,
-            'keepalives_count': 5,
-            # Application name for connection tracking
-            'application_name': 'farajayangutv_backend',
-        },
+        'USER': '' if _is_sqlite else DATABASE_USER,
+        'PASSWORD': '' if _is_sqlite else DATABASE_PASSWORD,
+        'HOST': '' if _is_sqlite else DATABASE_HOST,
+        'PORT': '' if _is_sqlite else DATABASE_PORT,
+        'CONN_MAX_AGE': 0 if _is_sqlite else 30,
+        # PostgreSQL-specific options — only applied when not using SQLite
+        **({} if _is_sqlite else {
+            'OPTIONS': {
+                'connect_timeout': 30,
+                'keepalives': 1,
+                'keepalives_idle': 30,
+                'keepalives_interval': 10,
+                'keepalives_count': 5,
+                'application_name': 'farajayangutv_backend',
+            },
+        }),
         # Set a reasonable test timeout
         'TEST': {
             'MIGRATE': True,
