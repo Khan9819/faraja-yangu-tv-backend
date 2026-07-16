@@ -45,14 +45,14 @@ CELERY_BEAT_LOG="logs/celery_beat.log"
 echo "Starting Celery workers..."
 
 celery -A farajayangu_be.celery worker -Q video_processing \
-  -n video_worker@%h --pool=prefork --concurrency=1 \
-  --max-tasks-per-child=5 > "$CELERY_WORKER_LOG" 2>&1 &
+  -n video_worker@%h --pool=prefork --concurrency=2 \
+  --max-tasks-per-child=5 --loglevel=INFO > "$CELERY_WORKER_LOG" 2>&1 &
 CELERY_VIDEO_PID=$!
 echo "  Video worker started with PID: $CELERY_VIDEO_PID"
 
 celery -A farajayangu_be.celery worker -Q general,celery \
-  -n general_worker@%h --pool=threads --concurrency=2 \
-  --max-tasks-per-child=50 > "$CELERY_GENERAL_LOG" 2>&1 &
+  -n general_worker@%h --pool=threads --concurrency=4 \
+  --max-tasks-per-child=50 --loglevel=INFO > "$CELERY_GENERAL_LOG" 2>&1 &
 CELERY_GENERAL_PID=$!
 echo "  General worker started with PID: $CELERY_GENERAL_PID"
 
