@@ -91,6 +91,8 @@ class Video(BaseModel):
                                                help_text='Number of conversion retry attempts')
     
     duration = models.DurationField(null=True, blank=True)
+    upload_token = models.CharField(max_length=255, null=True, blank=True, help_text='Long-lived upload session token')
+    upload_token_expiry = models.DateTimeField(null=True, blank=True, help_text='Expiry of upload token')
     uploaded_by = models.ForeignKey('authentication.User', related_name='videos', on_delete=models.CASCADE)
     views_count = models.IntegerField(default=0)
     likes_count = models.IntegerField(default=0)
