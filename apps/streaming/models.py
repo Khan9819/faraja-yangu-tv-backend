@@ -91,6 +91,12 @@ class Video(BaseModel):
                                                help_text='Number of conversion retry attempts')
     
     duration = models.DurationField(null=True, blank=True)
+    tv_poster = models.ImageField(upload_to='videos/tv', max_length=500, null=True, blank=True,
+                                  help_text='TV poster image (540x720 recommended)')
+    tv_landscape = models.ImageField(upload_to='videos/tv', max_length=500, null=True, blank=True,
+                                     help_text='TV landscape/banner image (1280x720 recommended)')
+    tv_square = models.ImageField(upload_to='videos/tv', max_length=500, null=True, blank=True,
+                                  help_text='TV square image (540x540 recommended)')
     upload_token = models.CharField(max_length=255, null=True, blank=True, help_text='Long-lived upload session token')
     upload_token_expiry = models.DateTimeField(null=True, blank=True, help_text='Expiry of upload token')
     uploaded_by = models.ForeignKey('authentication.User', related_name='videos', on_delete=models.CASCADE)
