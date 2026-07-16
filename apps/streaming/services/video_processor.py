@@ -900,8 +900,9 @@ class VideoProcessor:
                 text=True
             )
             
-            if result.returncode == 0:
+            if result.returncode == 0 and result.stdout.strip():
                 return float(result.stdout.strip())
+            logger.error(f"ffprobe failed (exit {result.returncode}): stderr={result.stderr.strip()}, stdout={result.stdout.strip()}")
             return 0.0
             
         except Exception as e:

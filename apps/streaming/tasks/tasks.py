@@ -527,8 +527,11 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
         # Update video object with HLS information
         video.hls_path = hls_output_dir
         video.hls_master_playlist = f"{hls_output_dir}/master.m3u8"
-        if conversion_result and conversion_result.get('duration'):
-            video.duration = timedelta(seconds=conversion_result['duration'])
+        duration_seconds = conversion_result.get('duration') if conversion_result else None
+        if not duration_seconds:
+            duration_seconds = extract_duration_from_hls_playlist(local_hls_dir)
+        if duration_seconds is not None:
+            video.duration = timedelta(seconds=float(duration_seconds))
         video.processing_status = 'completed'
         video.processing_error = None
         video.processing_checkpoint = None  # Clear checkpoint
@@ -684,6 +687,37 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
             cache.delete(lock_key)
         except:
             pass 
+
+
+def extract_duration_from_hls_playlist(local_hls_dir: str) -> float | None:
+    """Fallback: extract total duration from HLS variant playlist EXTINF tags."""
+    try:
+        variants_dir = os.path.join(local_hls_dir, '360p')
+        playlist_path = os.path.join(variants_dir, '360p.m3u8')
+        if not os.path.exists(playlist_path):
+            variants_dir = local_hls_dir
+            playlist_path = os.path.join(local_hls_dir, 'index.m3u8')
+            if not os.path.exists(playlist_path):
+                children = [d for d in os.listdir(local_hls_dir) if os.path.isdir(os.path.join(local_hls_dir, d))]
+                if children:
+                    playlist_path = os.path.join(local_hls_dir, children[0], f'{children[0]}.m3u8')
+                if not os.path.exists(playlist_path):
+                    logger.warning(f"No variant playlist found for duration extraction in {local_hls_dir}")
+                    return None
+        total = 0.0
+        with open(playlist_path) as f:
+            for line in f:
+                if line.startswith('#EXTINF:'):
+                    try:
+                        total += float(line.split(':')[1].split(',')[0])
+                    except (IndexError, ValueError):
+                        pass
+        if total > 0:
+            logger.info(f"Extracted duration {total}s from HLS playlist")
+            return total
+    except Exception as e:
+        logger.warning(f"Failed to extract duration from HLS playlist: {e}")
+    return None
 
 
 def upload_hls_files_to_storage(local_dir: str, remote_dir: str, max_workers: int = 2) -> list:
