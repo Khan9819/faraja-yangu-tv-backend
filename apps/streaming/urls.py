@@ -78,6 +78,9 @@ urlpatterns = [
     re_path(r'^hls/(?P<video_slug>[\w-]+)/(?P<file_path>.+)$', views.stream_hls, name='stream-hls'),
 
     # CMS: Comments
+    
+    # TV Device Authentication
+    path('tv/device-auth/', views.tv_device_auth, name='tv-device-auth'),
     path('comments/recent/', views.recent_comments, name='recent-comments'),
     path('videos/<int:video_id>/comments/', views.video_comments_list, name='video-comments-list'),
     path('cms/comments/<int:comment_id>/reply/', views.cms_comment_reply, name='cms-comment-reply'),

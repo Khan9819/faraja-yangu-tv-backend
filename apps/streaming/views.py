@@ -25,7 +25,8 @@ from rest_framework.decorators import permission_classes
 from .serializers.category import CategorySerializer
 from .serializers.comment import CommentSerializer, ReplySerializer
 from apps.streaming.tasks.tasks import assemble_chunks_task, delete_video_files_task
-from apps.authentication.models import Profile
+from apps.authentication.models import Profile, User
+from rest_framework_simplejwt.tokens import RefreshToken
 from django.http import HttpResponse, Http404, FileResponse
 from django.core.files.storage import default_storage
 from django.core.files.base import ContentFile
@@ -2365,3 +2366,41 @@ def video_interactions(request, video_id):
         'shares_count': 0,
     }
     return success_response(payload)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def tv_device_auth(request):
+    """
+    Authenticate a TV device and return a JWT access token.
+    Creates a guest user account tied to the device ID if not exists.
+    No user credentials required — the device is identified by its unique ID.
+    Content access is unrestricted for TV devices (no premium checks).
+    """
+    device_id = request.data.get('device_id') or request.data.get('deviceId')
+    device_name = request.data.get('device_name', 'Android TV')
+
+    if not device_id:
+        return error_response({'message': 'device_id is required'})
+
+    # Use a predictable username for the guest account
+    username = f'tv_guest_{device_id[:30]}'
+
+    user, created = User.objects.get_or_create(
+        username=username,
+        defaults={
+            'email': f'{username}@tv.farajayangutv.local',
+            'first_name': device_name,
+            'is_active': True,
+            'is_verified': True,
+            'auth_provider': 'tv_device',
+        }
+    )
+
+    refresh = RefreshToken.for_user(user)
+    return success_response({
+        'access': str(refresh.access_token),
+        'refresh': str(refresh),
+        'user_id': user.id,
+        'is_new_device': created,
+    })
