@@ -735,13 +735,35 @@ class VideoProcessor:
                 bufsize=1,  # Line buffered for immediate progress
                 universal_newlines=True
             )
-            
-            # Monitor progress (reads stdout until EOF)
-            self._monitor_ffmpeg_progress(process, variant_name, variant_idx, total_variants, video_duration)
-            
-            # Wait for process to complete and capture stderr
-            _, stderr = process.communicate(timeout=7200)  # 2 hour timeout per variant
-            
+
+            # Safety timeout per variant (prevents ffmpeg hang from blocking forever)
+            import threading
+            variant_timeout = getattr(settings, 'FFMPEG_VARIANT_TIMEOUT', 1800)
+            dead = threading.Event()
+
+            def kill_on_timeout():
+                if process.poll() is None:
+                    dead.set()
+                    process.kill()
+                    logger.error(f"FFmpeg variant {variant_name} timed out after {variant_timeout}s, killed")
+
+            timer = threading.Timer(variant_timeout, kill_on_timeout)
+            timer.daemon = True
+            timer.start()
+
+            try:
+                # Monitor progress (reads stdout until EOF)
+                self._monitor_ffmpeg_progress(process, variant_name, variant_idx, total_variants, video_duration)
+
+                # Wait for process to complete and capture stderr
+                _, stderr = process.communicate(timeout=900)  # 15 min grace after stdout closes
+            finally:
+                timer.cancel()
+
+            if dead.is_set():
+                self._update_variant_progress(variant_name, 0, f"{variant_name} timed out", 'failed')
+                return None
+
             if process.returncode != 0:
                 logger.error(f"FFmpeg error for {variant_name}: {stderr}")
                 self._update_variant_progress(variant_name, 0, f"{variant_name} failed", 'failed')

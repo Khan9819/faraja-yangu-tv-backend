@@ -692,20 +692,24 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
 def extract_duration_from_hls_playlist(local_hls_dir: str) -> float | None:
     """Fallback: extract total duration from HLS variant playlist EXTINF tags."""
     try:
-        variants_dir = os.path.join(local_hls_dir, '360p')
-        playlist_path = os.path.join(variants_dir, '360p.m3u8')
-        if not os.path.exists(playlist_path):
-            variants_dir = local_hls_dir
-            playlist_path = os.path.join(local_hls_dir, 'index.m3u8')
-            if not os.path.exists(playlist_path):
-                children = [d for d in os.listdir(local_hls_dir) if os.path.isdir(os.path.join(local_hls_dir, d))]
-                if children:
-                    playlist_path = os.path.join(local_hls_dir, children[0], f'{children[0]}.m3u8')
-                if not os.path.exists(playlist_path):
-                    logger.warning(f"No variant playlist found for duration extraction in {local_hls_dir}")
-                    return None
+        if not os.path.isdir(local_hls_dir):
+            logger.warning(f"HLS directory does not exist: {local_hls_dir}")
+            return None
+
+        playlist_path = None
+
+        for root, dirs, files in os.walk(local_hls_dir):
+            m3u8_files = sorted(f for f in files if f.endswith('.m3u8') and not f.startswith('master'))
+            if m3u8_files:
+                playlist_path = os.path.join(root, m3u8_files[0])
+                break
+
+        if not playlist_path:
+            logger.warning(f"No variant playlist found for duration extraction in {local_hls_dir}")
+            return None
+
         total = 0.0
-        with open(playlist_path) as f:
+        with open(playlist_path, encoding='utf-8', errors='replace') as f:
             for line in f:
                 if line.startswith('#EXTINF:'):
                     try:
@@ -713,8 +717,10 @@ def extract_duration_from_hls_playlist(local_hls_dir: str) -> float | None:
                     except (IndexError, ValueError):
                         pass
         if total > 0:
-            logger.info(f"Extracted duration {total}s from HLS playlist")
+            logger.info(f"Extracted duration {total:.1f}s from {os.path.basename(playlist_path)}")
             return total
+        else:
+            logger.warning(f"Playlist {playlist_path} has no EXTINF tags (duration=0)")
     except Exception as e:
         logger.warning(f"Failed to extract duration from HLS playlist: {e}")
     return None
