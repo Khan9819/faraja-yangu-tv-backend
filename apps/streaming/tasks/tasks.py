@@ -472,6 +472,15 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
                 
                 if not conversion_result['success']:
                     raise Exception(conversion_result.get('error', 'Unknown conversion error'))
+
+                # Verify at least one variant playlist was created
+                if not any(
+                    os.path.isfile(os.path.join(root, f))
+                    for root, dirs, files in os.walk(local_hls_dir)
+                    for f in files
+                    if f.endswith('.m3u8') and not f.startswith('master')
+                ):
+                    raise Exception("HLS conversion produced no variant playlist files - possible ffmpeg failure")
             else:
                 logger.info(f"Resuming: HLS files already exist locally for {video_id}")
                 # Get duration from existing files
@@ -496,6 +505,8 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
                     try:
                         uploaded_paths = upload_hls_files_to_storage(local_hls_dir, hls_output_dir)
                         logger.info(f"Uploaded {len(uploaded_paths)} files to R2 storage")
+                        if len(uploaded_paths) == 0:
+                            raise Exception("No HLS files found to upload - conversion may have failed silently")
                         send_video_progress(video_id, "uploading", 90, f"Uploaded {len(uploaded_paths)} HLS files",
                                            checkpoint={'stage': 'finalizing'})
                     except Exception as upload_error:
@@ -513,6 +524,8 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
                 try:
                     uploaded_paths = upload_hls_files_to_storage(local_hls_dir, hls_output_dir)
                     logger.info(f"Uploaded {len(uploaded_paths)} files to R2 storage")
+                    if len(uploaded_paths) == 0:
+                        raise Exception("No HLS files found to upload - conversion may have failed silently")
                     send_video_progress(video_id, "uploading", 90, f"Uploaded {len(uploaded_paths)} HLS files",
                                        checkpoint={'stage': 'finalizing'})
                 except Exception as upload_error:
@@ -523,6 +536,11 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
         # Stage 4: Finalize
         send_video_progress(video_id, "uploading", 95, "Finalizing video processing...",
                            checkpoint={'stage': 'finalizing'})
+        
+        # Verify master playlist exists in R2 before marking as completed
+        remote_master = f"{hls_output_dir}/master.m3u8"
+        if not default_storage.exists(remote_master):
+            raise Exception(f"HLS upload verification failed: master.m3u8 not found at {remote_master}")
         
         # Update video object with HLS information
         video.hls_path = hls_output_dir
