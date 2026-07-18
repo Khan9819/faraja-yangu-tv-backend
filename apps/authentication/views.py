@@ -444,6 +444,7 @@ def register(request):
         defaults={'description': 'Standard user role'},
     )
     user.roles.add(role_obj)
+    user.is_verified = True
     user.save()
     
 
