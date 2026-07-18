@@ -45,6 +45,10 @@ class Video(BaseModel):
     # Original uploaded video (will be deleted after HLS conversion)
     video = models.FileField(upload_to='videos/originals', max_length=500, null=True, blank=True)
     
+    # Downloadable MP4 file (preserved for direct download)
+    download_path = models.CharField(max_length=500, null=True, blank=True,
+                                    help_text='Path to downloadable MP4 file in R2 storage (videos/downloads/)')
+    
     # HLS streaming fields
     hls_master_playlist = models.CharField(max_length=500, null=True, blank=True, 
                                           help_text='Path to HLS master playlist (master.m3u8)')
@@ -120,6 +124,26 @@ class Video(BaseModel):
         if self.is_ready_for_streaming:
             return f"{self.hls_path}/master.m3u8"
         return None
+
+
+from django.db.models.signals import post_save
+from django.dispatch import receiver
+
+
+@receiver(post_save, sender=Video)
+def trigger_mp4_reconstruction(sender, instance, created, **kwargs):
+    """After HLS conversion completes, trigger MP4 reconstruction in background.
+    
+    This signal runs OUTSIDE the upload/conversion pipeline.
+    It fires when processing_status transitions to 'completed'.
+    """
+    if not created and instance.processing_status == 'completed':
+        update_fields = kwargs.get('update_fields')
+        if update_fields and 'processing_status' not in update_fields:
+            return
+        if not instance.download_path:
+            from apps.streaming.tasks.tasks import reconstruct_mp4_for_download_task
+            reconstruct_mp4_for_download_task.delay(instance.id)
     
 
 class Comment(BaseModel):

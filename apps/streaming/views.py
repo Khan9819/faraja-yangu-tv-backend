@@ -1,4 +1,5 @@
 import json
+import re
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -27,7 +28,7 @@ from .serializers.comment import CommentSerializer, ReplySerializer
 from apps.streaming.tasks.tasks import assemble_chunks_task, delete_video_files_task
 from apps.authentication.models import Profile, User
 from rest_framework_simplejwt.tokens import RefreshToken
-from django.http import HttpResponse, Http404, FileResponse
+from django.http import HttpResponse, Http404, FileResponse, StreamingHttpResponse
 from django.core.files.storage import default_storage
 from django.core.files.base import ContentFile
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
@@ -1263,6 +1264,170 @@ def stream_hls(request, video_slug, file_path):
         logger.error(f"Error streaming HLS file {video_slug}/{file_path}: {str(e)}")
         raise Http404("Error loading video file")
 
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def download_video_chunks(request, uid):
+    """
+    Stream video chunks from R2 as a single downloadable MP4 file.
+    Uses StreamingHttpResponse with HTTP Range request support for resume.
+    
+    Chunks must exist in R2 at: videos/chunks/{video_id}/chunk_0000, chunk_0001, ...
+    They are assembled on-the-fly without storing a duplicate MP4.
+    """
+    try:
+        video = Video.objects.get(uid=uid)
+    except Video.DoesNotExist:
+        return error_response({'message': 'Video not found'}, status=404)
+
+    if not video.is_ready_for_streaming:
+        return error_response({'message': 'Video is still processing'})
+
+    if video.upload_total_chunks == 0:
+        return error_response({'message': 'chunks not available for this video'})
+
+    from django.core.files.storage import default_storage
+
+    # Discover chunks from R2
+    chunk_dir = f'videos/chunks/{video.id}'
+    chunk_keys = []
+
+    try:
+        if hasattr(default_storage, 'connection') and hasattr(default_storage.connection, 'meta'):
+            s3_client = default_storage.connection.meta.client
+            paginator = s3_client.get_paginator('list_objects_v2')
+            pages = paginator.paginate(
+                Bucket=default_storage.bucket_name,
+                Prefix=f'{chunk_dir}/',
+            )
+            for page in pages:
+                for obj in page.get('Contents', []):
+                    chunk_keys.append(obj['Key'])
+            chunk_keys.sort()
+        else:
+            # Fallback: enumerate by naming convention
+            i = 0
+            while True:
+                chunk_path = f'{chunk_dir}/chunk_{i:04d}'
+                if not default_storage.exists(chunk_path):
+                    break
+                chunk_keys.append(chunk_path)
+                i += 1
+    except Exception:
+        chunk_keys = []
+
+    if not chunk_keys:
+        return error_response(
+            {'message': 'Download not available — chunks missing from storage'},
+            status=404,
+        )
+
+    # Calculate total size from chunk objects
+    chunk_sizes = []
+    total_size = 0
+    try:
+        for key in chunk_keys:
+            head = s3_client.head_object(Bucket=default_storage.bucket_name, Key=key)
+            size = head.get('ContentLength', 0)
+            chunk_sizes.append(size)
+            total_size += size
+    except Exception:
+        return error_response({'message': 'Failed to read chunk metadata'}, status=500)
+
+    if total_size == 0:
+        return error_response({'message': 'Chunk files appear to be empty'}, status=500)
+
+    range_header = request.META.get('HTTP_RANGE', '')
+
+    if range_header:
+        range_match = re.match(r'bytes=(\d+)-(\d*)', range_header)
+        if not range_match:
+            return error_response({'message': 'Invalid Range header'}, status=416)
+
+        start_byte = int(range_match.group(1))
+        end_byte = (
+            int(range_match.group(2))
+            if range_match.group(2)
+            else total_size - 1
+        )
+
+        if start_byte >= total_size:
+            return error_response(
+                {'message': f'Range not satisfiable: start {start_byte} >= total {total_size}'},
+                status=416,
+            )
+
+        end_byte = min(end_byte, total_size - 1)
+
+        def ranged_chunk_generator():
+            r2 = default_storage.connection.meta.client
+            bucket = default_storage.bucket_name
+            byte_offset = 0
+            for idx in range(len(chunk_keys)):
+                chunk_size = chunk_sizes[idx]
+                chunk_start = byte_offset
+                chunk_end = byte_offset + chunk_size
+
+                if chunk_end <= start_byte:
+                    byte_offset = chunk_end
+                    continue
+
+                if chunk_start > end_byte:
+                    break
+
+                local_start = max(0, start_byte - chunk_start)
+                local_end = min(chunk_size, end_byte - chunk_start + 1)
+
+                if local_start < local_end:
+                    resp = r2.get_object(
+                        Bucket=bucket,
+                        Key=chunk_keys[idx],
+                        Range=f'bytes={local_start}-{local_end - 1}',
+                    )
+                    data = resp['Body'].read()
+                    if data:
+                        yield data
+                        byte_offset = chunk_end
+                        continue
+
+                # Fallback: download full chunk and slice
+                resp = r2.get_object(Bucket=bucket, Key=chunk_keys[idx])
+                data = resp['Body'].read()
+                if local_start < local_end:
+                    yield data[local_start:local_end]
+
+                byte_offset = chunk_end
+                if byte_offset > end_byte:
+                    break
+
+        response = StreamingHttpResponse(
+            ranging_chunk_generator(),
+            status=206,
+            content_type='video/mp4',
+        )
+        response['Content-Range'] = f'bytes {start_byte}-{end_byte}/{total_size}'
+        response['Content-Length'] = str(end_byte - start_byte + 1)
+    else:
+        def full_chunk_generator():
+            r2 = default_storage.connection.meta.client
+            bucket = default_storage.bucket_name
+            for key in chunk_keys:
+                resp = r2.get_object(Bucket=bucket, Key=key)
+                data = resp['Body'].read()
+                if data:
+                    yield data
+
+        response = StreamingHttpResponse(
+            full_chunk_generator(),
+            content_type='video/mp4',
+        )
+        response['Content-Length'] = str(total_size)
+
+    response['Accept-Ranges'] = 'bytes'
+    response['Content-Disposition'] = f'attachment; filename="{video.title}.mp4"'
+    return response
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_video_stream_url(request, uid):
@@ -1302,6 +1467,9 @@ def get_video_stream_url(request, uid):
         # Use backend proxy URL to enable ad injection
         stream_url = f"{backend_url}/streaming/hls/{video.uid}/master.m3u8"
         
+        # Direct chunk-streaming download URL (assembles on-the-fly from R2 chunks)
+        download_url = f"{backend_url}/streaming/stream/{video.uid}/download-file/"
+        
         parent_category_name = None
         category_name = None
         if video.category is not None:
@@ -1334,6 +1502,7 @@ def get_video_stream_url(request, uid):
             'has_liked': has_liked,
             'has_disliked': has_disliked,
             'stream_url': stream_url,
+            'download_url': download_url,
             'is_ready': video.is_ready_for_streaming,
         })
         

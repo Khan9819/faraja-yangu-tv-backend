@@ -996,33 +996,10 @@ def assemble_chunks_task(self, video_id: int, filename: str):
                 elif i == total_chunks - 1:
                     send_video_progress(video_id, "assembling", progress, f"Assembled chunk {i + 1}/{total_chunks}")
         
-        send_video_progress(video_id, "assembling", 85, "Cleaning up chunks from storage...")
+        send_video_progress(video_id, "assembling", 85, "Assembly complete")
         
-        # Delete chunks from R2 in batches to avoid connection pool exhaustion
-        s3_client = default_storage.connection.meta.client
-        bucket_name = default_storage.bucket_name
-        CHUNK_BATCH = 1000
-        
-        for batch_start in range(0, total_chunks, CHUNK_BATCH):
-            batch = chunk_files[batch_start:batch_start + CHUNK_BATCH]
-            try:
-                s3_client.delete_objects(
-                    Bucket=bucket_name,
-                    Delete={'Objects': [{'Key': k} for k in batch]}
-                )
-            except Exception as e:
-                logger.warning(f"Batch delete failed for video {video_id}, falling back to individual: {e}")
-                for chunk_path in batch:
-                    try:
-                        default_storage.delete(chunk_path)
-                    except Exception as ie:
-                        logger.warning(f"Could not delete chunk {chunk_path}: {str(ie)}")
-        
-        try:
-            if hasattr(default_storage, 'delete'):
-                default_storage.delete(chunk_dir)
-        except Exception as e:
-            logger.warning(f"Could not delete chunk directory {chunk_dir}: {str(e)}")
+        # Chunks retained in R2 for streaming download support
+        # (previously deleted — now kept as downloadable MP4 source)
         
         # Save checkpoint with local path - DO NOT upload to R2 (queue this update)
         def save_final_checkpoint():
@@ -1500,5 +1477,90 @@ def import_video_from_google_drive(self, video_id: int, google_drive_url: str):
                 logger.debug(f"Cleaned up temp file after failure: {temp_path}")
         except Exception:
             pass
+
+
+@celery_app.task(bind=True)
+def reconstruct_mp4_for_download_task(self, video_id: int):
+    """
+    Reconstruct MP4 from existing HLS segments and upload to R2.
+    
+    Runs OUTSIDE the upload/conversion pipeline — triggered by a
+    Django signal after processing_status becomes 'completed'.
+    Does NOT touch chunks, upload, or HLS conversion.
+    """
+    import subprocess
+
+    try:
+        video = Video.objects.get(id=video_id)
+    except Video.DoesNotExist:
+        logger.error(f"reconstruct_mp4: Video {video_id} not found")
+        return {'success': False, 'error': 'Video not found'}
+
+    if video.download_path:
+        logger.info(f"reconstruct_mp4: Video {video_id} already has download_path, skipping")
+        return {'success': True, 'skipped': True}
+
+    if not video.hls_path:
+        logger.warning(f"reconstruct_mp4: Video {video_id} has no hls_path, skipping")
+        return {'success': False, 'error': 'No HLS path'}
+
+    from django.conf import settings
+    backend_url = getattr(settings, 'BACKEND_URL', 'https://backend.farajayangutv.co.tz')
+    playlist_url = f'{backend_url}/streaming/hls/{video.uid}/master.m3u8'
+
+    tmp_fd, output_path = None, None
+    try:
+        tmp_fd, output_path = tempfile.mkstemp(suffix='.mp4')
+        os.close(tmp_fd)
+
+        cmd = [
+            'ffmpeg', '-y',
+            '-i', playlist_url,
+            '-c', 'copy',
+            '-bsf:a', 'aac_adtstoasc',
+            '-movflags', '+faststart',
+            '-reconnect', '1',
+            '-reconnect_at_eof', '1',
+            '-reconnect_streamed', '1',
+            '-reconnect_delay_max', '30',
+            '-timeout', '0',
+            '-loglevel', 'error',
+            output_path,
+        ]
+
+        logger.info(f"reconstruct_mp4: Running ffmpeg for video {video_id}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+
+        if result.returncode != 0:
+            logger.error(f"reconstruct_mp4: ffmpeg failed for {video_id}: {result.stderr}")
+            return {'success': False, 'error': result.stderr[-200:]}
+
+        if not os.path.exists(output_path) or os.path.getsize(output_path) < 10000:
+            logger.error(f"reconstruct_mp4: Output file too small for {video_id}")
+            return {'success': False, 'error': 'Output file too small'}
+
+        r2_path = f'videos/downloads/{video.uid}/original.mp4'
+        with open(output_path, 'rb') as f:
+            default_storage.save(r2_path, f)
+
+        video.download_path = r2_path
+        video.save(update_fields=['download_path'])
+
+        size_mb = os.path.getsize(output_path) / (1024 * 1024)
+        logger.info(f"reconstruct_mp4: Done {video.uid} → {r2_path} ({size_mb:.1f} MB)")
+        return {'success': True, 'path': r2_path, 'size_mb': size_mb}
+
+    except subprocess.TimeoutExpired:
+        logger.error(f"reconstruct_mp4: Timeout for video {video_id}")
+        return {'success': False, 'error': 'Timeout'}
+    except Exception as e:
+        logger.error(f"reconstruct_mp4: Error for video {video_id}: {e}")
+        return {'success': False, 'error': str(e)}
+    finally:
+        if output_path and os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+            except OSError:
+                pass
 
         raise

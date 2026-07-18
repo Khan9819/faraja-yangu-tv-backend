@@ -71,6 +71,7 @@ urlpatterns = [
     path('stream/<str:uid>/', views.get_video_stream_url, name='get-stream-url'),
     path('stream/<str:video_uid>/favorite/', views.favorite_video, name='favorite-video'),
     path('stream/<str:video_uid>/unfavorite/', views.unfavorite_video, name='unfavorite-video'),
+    path('stream/<str:uid>/download-file/', views.download_video_chunks, name='download-video-chunks'),
     path('stream/<str:video_uid>/download/', views.mark_video_downloaded, name='download-video'),
     path('stream/<str:video_uid>/undownload/', views.unmark_video_downloaded, name='undownload-video'),
     path('stream/<str:video_uid>/download-status/', views.get_download_status, name='download-status'),
