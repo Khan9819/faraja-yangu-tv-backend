@@ -1168,14 +1168,9 @@ def create_video(request):
     The client uses this ID to upload chunks via get_chunk_upload_url/upload_chunk.
     HLS conversion is triggered later by assemble_chunks.
     """
-    data = {
-        'title': request.data.get('title'),
-        'description': request.data.get('description'),
-        'category': request.data.get('category'),
-        'thumbnail': request.data.get('thumbnail'),
-        'is_published': request.data.get('status', 'draft') == 'published',
-        'uploaded_by': request.user.id,
-    }
+    data = {key: value for key, value in request.data.items()}
+    data['is_published'] = request.data.get('status', 'draft') == 'published'
+    data['uploaded_by'] = request.user.id
 
     serializer = VideoSerializer(data=data)
     if serializer.is_valid():
