@@ -1278,7 +1278,7 @@ def download_video_chunks(request, uid):
     try:
         video = Video.objects.get(uid=uid)
     except Video.DoesNotExist:
-        return error_response({'message': 'Video not found'}, status=404)
+        return error_response({'message': 'Video not found'}, code=404)
 
     if not video.is_ready_for_streaming:
         return error_response({'message': 'Video is still processing'})
@@ -1319,7 +1319,7 @@ def download_video_chunks(request, uid):
     if not chunk_keys:
         return error_response(
             {'message': 'Download not available — chunks missing from storage'},
-            status=404,
+            code=404,
         )
 
     # Calculate total size from chunk objects
@@ -1332,17 +1332,17 @@ def download_video_chunks(request, uid):
             chunk_sizes.append(size)
             total_size += size
     except Exception:
-        return error_response({'message': 'Failed to read chunk metadata'}, status=500)
+        return error_response({'message': 'Failed to read chunk metadata'}, code=500)
 
     if total_size == 0:
-        return error_response({'message': 'Chunk files appear to be empty'}, status=500)
+        return error_response({'message': 'Chunk files appear to be empty'}, code=500)
 
     range_header = request.META.get('HTTP_RANGE', '')
 
     if range_header:
         range_match = re.match(r'bytes=(\d+)-(\d*)', range_header)
         if not range_match:
-            return error_response({'message': 'Invalid Range header'}, status=416)
+            return error_response({'message': 'Invalid Range header'}, code=416)
 
         start_byte = int(range_match.group(1))
         end_byte = (
@@ -1354,7 +1354,7 @@ def download_video_chunks(request, uid):
         if start_byte >= total_size:
             return error_response(
                 {'message': f'Range not satisfiable: start {start_byte} >= total {total_size}'},
-                status=416,
+                code=416,
             )
 
         end_byte = min(end_byte, total_size - 1)
