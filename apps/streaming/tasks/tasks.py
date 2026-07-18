@@ -165,12 +165,14 @@ def _send_notification(fcm_token: str, title: str, body: str, data: dict = None)
         response = messaging.send(message)
         logger.info(f"Successfully sent notification: {response}")
         return response
-    except messaging.UnregisteredError:
-        logger.warning("FCM token is unregistered")
-    except messaging.InvalidArgumentError as e:
-        logger.error(f"Invalid argument: {e}")
     except Exception as e:
-        logger.error(f"Failed to send notification: {e}")
+        cls_name = type(e).__name__
+        if 'Unregistered' in cls_name or 'NotFound' in cls_name:
+            logger.warning(f"FCM token is unregistered: {e}")
+        elif 'Invalid' in cls_name:
+            logger.error(f"Invalid FCM argument: {e}")
+        else:
+            logger.error(f"Failed to send notification: {cls_name}: {e}")
         return None
 
     
