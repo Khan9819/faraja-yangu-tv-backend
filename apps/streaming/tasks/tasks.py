@@ -2,6 +2,7 @@
 Celery tasks for video processing and HLS conversion.
 """
 import os
+import time
 from pathlib import Path
 import logging
 from datetime import timedelta, datetime, timezone
@@ -280,7 +281,7 @@ def notify_user_of_reply(self, commenter_user_id: int, replier_name: str, commen
     autoretry_for=(Exception,),
     retry_backoff=60,
     retry_backoff_max=600,
-    max_retries=0,  # Reduced from 3 to prevent too many duplicate processes
+    max_retries=2,  # Allow retry on failures (e.g. HLS upload timeout)
     acks_late=True,
     reject_on_worker_lost=True,
     soft_time_limit=14400,
@@ -537,10 +538,24 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
         send_video_progress(video_id, "uploading", 95, "Finalizing video processing...",
                            checkpoint={'stage': 'finalizing'})
         
-        # Verify master playlist exists in R2 before marking as completed
+        # Verify master playlist exists in R2 with retries
+        # Large HLS uploads (>1000 segments) may take time to become visible on R2
         remote_master = f"{hls_output_dir}/master.m3u8"
-        if not default_storage.exists(remote_master):
-            raise Exception(f"HLS upload verification failed: master.m3u8 not found at {remote_master}")
+        max_verify_attempts = 10
+        verify_delay = 3
+        master_found = False
+        for attempt in range(max_verify_attempts):
+            if default_storage.exists(remote_master):
+                master_found = True
+                break
+            logger.warning(
+                f"Master playlist not yet visible on R2 (attempt {attempt + 1}/{max_verify_attempts}): {remote_master}"
+            )
+            if attempt < max_verify_attempts - 1:
+                time.sleep(verify_delay)
+                verify_delay = min(verify_delay * 2, 30)
+        if not master_found:
+            raise Exception(f"HLS upload verification failed after {max_verify_attempts} attempts: master.m3u8 not found at {remote_master}")
         
         # Update video object with HLS information
         video.hls_path = hls_output_dir
@@ -854,8 +869,8 @@ def cleanup_local_files(video_file_path: str, hls_dir: str):
     max_retries=3,
     acks_late=True,
     reject_on_worker_lost=True,
-    soft_time_limit=1800,
-    time_limit=2100,
+    soft_time_limit=7200,
+    time_limit=9000,
 )
 def assemble_chunks_task(self, video_id: int, filename: str):
     """
