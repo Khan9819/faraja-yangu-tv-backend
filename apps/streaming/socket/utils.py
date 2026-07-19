@@ -75,7 +75,7 @@ def send_video_progress(
     stage: str, 
     progress: int, 
     message: str, 
-    status: str = None, 
+    status: str = "processing", 
     checkpoint: dict = None, 
     persist: bool = True,
     variants_progress: dict = None
