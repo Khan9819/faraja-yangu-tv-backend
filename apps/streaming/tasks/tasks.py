@@ -151,14 +151,25 @@ def _send_notification(fcm_token: str, title: str, body: str, data: dict = None)
     # FCM requires all data values to be strings
     string_data = {k: str(v) for k, v in (data or {}).items()}
     
-    # Data-only message: no 'notification' block so the frontend has full
-    # control over display and tap handling on both Android and iOS.
-    string_data['title'] = title
-    string_data['body'] = body
+    # Build notification for Android (shows thumbnail + custom sound in system tray)
+    notification_config = {
+        'title': title,
+        'body': body,
+    }
+    
+    android_config = messaging.AndroidConfig(
+        priority='high',
+        notification=messaging.AndroidNotification(
+            sound='faraja_notification',
+            channel_id='video_upload_channel',
+            image_url=data.get('video_thumbnail') if data else None,
+        ),
+    )
     
     message = messaging.Message(
         data=string_data,
         token=fcm_token,
+        android=android_config,
     )
     
     try:
