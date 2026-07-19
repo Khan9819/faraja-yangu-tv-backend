@@ -119,6 +119,30 @@ def _get_users(target: UserGroupTypes):
     else:
         return User.objects.none()
 
+def _normalize_media_url(url: str) -> str:
+    """Convert R2 or relative URLs to the public CMS proxy URL."""
+    if not url:
+        return ''
+    # If already using the CMS domain, return as-is
+    if 'cms.farajayangutv.co.tz' in url:
+        return url
+    # If it's a full R2 URL, extract the path and prefix with CMS
+    if 'r2.cloudflarestorage.com' in url:
+        import re
+        match = re.search(r'/farajayangu-tv/(.+)$', url)
+        if match:
+            return f'https://cms.farajayangutv.co.tz/media/{match.group(1)}'
+    # If absolute URL from another domain, try to extract path
+    if url.startswith('http') and '/media/' in url:
+        import re
+        match = re.search(r'/media/(.+)$', url)
+        if match:
+            return f'https://cms.farajayangutv.co.tz/media/{match.group(1)}'
+    # If relative path, prefix with CMS media URL
+    if not url.startswith('http'):
+        return f'https://cms.farajayangutv.co.tz/media/{url.lstrip("/")}'
+    return url
+
 def _send_notification(fcm_token: str, title: str, body: str, data: dict = None):
     """
     Send push notification to a device via FCM.
@@ -150,19 +174,36 @@ def _send_notification(fcm_token: str, title: str, body: str, data: dict = None)
     
     # FCM requires all data values to be strings
     string_data = {k: str(v) for k, v in (data or {}).items()}
+    # Flutter handlers look for 'title' and 'body' in data payload (for foreground rendering)
+    string_data.setdefault('title', title)
+    string_data.setdefault('body', body)
     
-    # Build notification for Android (shows thumbnail + custom sound in system tray)
-    notification_config = {
-        'title': title,
-        'body': body,
-    }
+    # Normalize thumbnail URL to public CMS proxy URL
+    raw_thumbnail = data.get('video_thumbnail', '') if data else ''
+    normalized_thumbnail = _normalize_media_url(raw_thumbnail) if raw_thumbnail else ''
+    if normalized_thumbnail:
+        string_data['video_thumbnail'] = normalized_thumbnail
     
     android_config = messaging.AndroidConfig(
         priority='high',
         notification=messaging.AndroidNotification(
+            title=title,
+            body=body,
             sound='faraja_notification',
             channel_id='video_upload_channel',
-            image_url=data.get('video_thumbnail') if data else None,
+            color='#E7792A',
+            image=normalized_thumbnail or None,
+        ),
+    )
+    
+    apns_config = messaging.APNSConfig(
+        payload=messaging.APNSPayload(
+            aps=messaging.Aps(
+                alert=messaging.ApsAlert(title=title, body=body),
+                sound='default',
+                mutable_content=True,
+                content_available=True,
+            ),
         ),
     )
     
@@ -170,6 +211,7 @@ def _send_notification(fcm_token: str, title: str, body: str, data: dict = None)
         data=string_data,
         token=fcm_token,
         android=android_config,
+        apns=apns_config,
     )
     
     try:
@@ -322,8 +364,9 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
     db_queue.start()
     
     # Acquire a lock to prevent duplicate task execution for the same video
+    # Lock TTL = soft_time_limit (14400s) + 1 hour buffer = 18000s
     lock_key = f"video_conversion_lock_{video_id}"
-    lock_acquired = cache.add(lock_key, self.request.id, timeout=18000)  # 5 hour timeout
+    lock_acquired = cache.add(lock_key, self.request.id, timeout=18000)
     
     if not lock_acquired:
         # Check if the existing lock is from a different task
@@ -638,7 +681,7 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
             'video_description': video.description or '',
             'video_duration': str(int(video.duration.total_seconds())) if video.duration else '0',
             'video_created_at': video.created_at.isoformat() if video.created_at else '',
-            'master_playlist': f'/streaming/hls/{video.uid}/master.m3u8' if video.hls_master_playlist else '',
+            'master_playlist': f"{getattr(settings, 'BASE_URL', 'http://127.0.0.1:8000')}/streaming/hls/{video.uid}/master.m3u8" if video.hls_master_playlist else '',
         }
         
         send_push_notification.delay(
@@ -717,11 +760,8 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
             pass
         
         db_queue.stop(timeout=5)
-        # Release lock before retry so the retry can acquire it
-        cache.delete(lock_key)
         
-        # Retry the task
-        raise
+        # Retry the task — lock stays held to prevent duplicate from acquiring it
     
     finally:
         # Always stop the queue and release the lock when task ends
@@ -902,8 +942,18 @@ def assemble_chunks_task(self, video_id: int, filename: str):
     """
     import tempfile
     import shutil
+    from django.core.cache import cache
 
     close_old_connections()
+    
+    # Idempotency lock: prevent duplicate assembly tasks for the same video
+    lock_key = f"chunk_assembly_lock_{video_id}"
+    lock_acquired = cache.add(lock_key, self.request.id, timeout=10800)
+    if not lock_acquired:
+        existing_task_id = cache.get(lock_key)
+        if existing_task_id and existing_task_id != self.request.id:
+            logger.warning(f"Video {video_id} assembly already in progress (task {existing_task_id}), skipping")
+            return {'success': False, 'error': 'Assembly already in progress', 'duplicate': True}
     
     # Initialize database update queue for async writes
     db_queue = DatabaseUpdateQueue()
@@ -1074,9 +1124,12 @@ def assemble_chunks_task(self, video_id: int, filename: str):
         raise
     
     finally:
-        # Always stop the queue when task ends
         try:
             db_queue.stop(timeout=5)
+        except:
+            pass
+        try:
+            cache.delete(lock_key)
         except:
             pass
     
@@ -1590,5 +1643,3 @@ def reconstruct_mp4_for_download_task(self, video_id: int):
                 os.remove(output_path)
             except OSError:
                 pass
-
-        raise

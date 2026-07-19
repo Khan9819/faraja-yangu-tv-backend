@@ -32,6 +32,9 @@ class VideoSerializer(serializers.ModelSerializer):
 
     def get_master_playlist(self, obj):
         if obj.hls_master_playlist:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(f'/streaming/hls/{obj.uid}/master.m3u8')
             base_url = getattr(settings, 'BASE_URL', 'http://127.0.0.1:8000')
             return f"{base_url}/streaming/hls/{obj.uid}/master.m3u8"
         return None
@@ -120,6 +123,9 @@ class VideoFeedSerializer(serializers.ModelSerializer):
 
     def get_master_playlist(self, obj):
         if obj.hls_master_playlist:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(f'/streaming/hls/{obj.uid}/master.m3u8')
             base_url = getattr(settings, 'BASE_URL', 'http://127.0.0.1:8000')
             return f"{base_url}/streaming/hls/{obj.uid}/master.m3u8"
         return None
