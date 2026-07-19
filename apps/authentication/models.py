@@ -57,6 +57,9 @@ class Devices(BaseModel):
     fcm_token = models.TextField()
     is_active = models.BooleanField(default=True)
 
+    class Meta:
+        unique_together = ('device_id', 'fcm_token')
+
 class User(AbstractUser):
     
     profile = models.OneToOneField('authentication.Profile', related_name='user', on_delete=models.CASCADE, null=True, blank=True)

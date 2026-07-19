@@ -5,6 +5,7 @@ app_name = 'analytics'
 
 urlpatterns = [
     path('notifications/', views.list_notifications, name='notifications-list'),
+    path('notifications/unread-count/', views.unread_notification_count, name='notifications-unread-count'),
     path('notifications/mark-all-read/', views.mark_all_notifications_read, name='notifications-mark-all-read'),
     path('notifications/<int:pk>/read/', views.mark_notification_read, name='notification-mark-read'),
     path('notifications/<int:pk>/', views.delete_notification, name='notification-delete'),

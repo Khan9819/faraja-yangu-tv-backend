@@ -47,11 +47,15 @@ class Notification(BaseModel):
     message = models.TextField()
     type = models.CharField(max_length=50, choices=NOTIFICATION_TYPES.choices, default=NOTIFICATION_TYPES.SYSTEM)
     is_read = models.BooleanField(default=False)
+    thumbnail_url = models.URLField(max_length=500, blank=True)
     target_video_slug = models.CharField(null=True, blank=True, max_length=255)
     target_url = models.URLField(null=True, blank=True)
 
     class Meta:
         ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['user', 'is_read']),
+        ]
 
     def __str__(self):
         return f'{self.user} notification'

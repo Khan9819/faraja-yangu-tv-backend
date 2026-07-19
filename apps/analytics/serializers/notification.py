@@ -13,6 +13,7 @@ class NotificationSerializer(serializers.ModelSerializer):
             'body',
             'type',
             'is_read',
+            'thumbnail_url',
             'created_at',
             'target_video_slug',
             'target_url',

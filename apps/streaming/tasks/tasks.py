@@ -254,7 +254,8 @@ def _send_notification(fcm_token: str, title: str, body: str, data: dict = None)
 @celery_app.task(bind=True)
 def send_push_notification(self, target: UserGroupTypes, notification_type: NotificationTypes, title: str, message: str, metadata: dict = None):
     """
-    Send push notifications to a group of users.
+    Send push notifications to a group of users + record persistent history.
+    Uses Redis lock + DB notification_sent for idempotency.
     
     Args:
         target: User group to send notifications to (ALL, CLIENTS, ADMINS)
@@ -265,12 +266,29 @@ def send_push_notification(self, target: UserGroupTypes, notification_type: Noti
     """
     close_old_connections()
     
-    get_users = _get_users(target)
-    sent_count = 0
-    failed_count = 0
-    
-    # Extract video_id from metadata if present
     video_uid = metadata.get('video_id') if metadata else None
+    video_id = metadata.get('db_video_id') if metadata else None
+    
+    # Redis idempotency lock — prevent duplicate sends from Celery retries
+    if video_id:
+        notif_lock_key = f"push_notif_lock:{video_id}"
+        acquired = cache.add(notif_lock_key, self.request.id, timeout=600)
+        if not acquired:
+            existing = cache.get(notif_lock_key)
+            if existing and existing != self.request.id:
+                logger.info(f"Push notification for video {video_id} already sent (task {existing}), skipping")
+                return
+    
+    # DB-level idempotency check
+    if video_id:
+        try:
+            from apps.streaming.models import Video
+            v = Video.objects.only('notification_sent').get(id=video_id)
+            if v.notification_sent:
+                logger.info(f"Video {video_id} notification already sent (DB flag), skipping")
+                return
+        except Exception:
+            pass
     
     if not title:
         if notification_type == NotificationTypes.NEW_VIDEO:
@@ -278,39 +296,55 @@ def send_push_notification(self, target: UserGroupTypes, notification_type: Noti
         elif notification_type == NotificationTypes.COMMENT_REPLY:
             title = "You have a new comment reply"
     
-    print("Notification sent to: ", get_users)
+    get_users = _get_users(target)
+    sent_count = 0
+    failed_count = 0
     
+    # Get thumbnail URL for history recording
+    thumbnail_url = metadata.get('video_thumbnail', '') if metadata else ''
+    
+    # Record notifications for ALL users (history) — separate from FCM push
+    if notification_type == NotificationTypes.NEW_VIDEO:
+        thumbnail_for_history = metadata.get('thumbnail_url', '') if metadata else ''
+        try:
+            notification_records = [
+                Notification(
+                    user=user,
+                    title=title,
+                    message=message.replace('--username--', user.username),
+                    type=Notification.NOTIFICATION_TYPES.VIDEO,
+                    is_read=False,
+                    thumbnail_url=thumbnail_for_history,
+                    target_video_slug=video_uid,
+                    target_url=f'/Player/{video_uid}' if video_uid else None,
+                )
+                for user in get_users
+            ]
+            Notification.objects.bulk_create(notification_records, batch_size=500)
+            logger.info(f"Recorded {len(notification_records)} notification history rows for video {video_id}")
+        except Exception as e:
+            logger.error(f"Failed to record notification history: {e}")
+    
+    # FCM push to active devices (real-time)
     for user in get_users:
         devices: list[Devices] = user.devices.filter(is_active=True)
         user_message = message.replace("--username--", user.username)
-        print(user_message)
         for device in devices:
-            print(device.fcm_token)
             if device.fcm_token:
                 result = _send_notification(device.fcm_token, title, user_message, data=metadata)
                 if result:
                     sent_count += 1
                 else:
                     failed_count += 1
-                logger.debug(f"Push notification sent: {user.username} | {device.fcm_token}")
-        
-        # Create in-app notification record
-        notification_kwargs = {
-            'user': user,
-            'title': title,
-            'message': user_message,
-            'type': Notification.NOTIFICATION_TYPES.VIDEO if notification_type == NotificationTypes.NEW_VIDEO else Notification.NOTIFICATION_TYPES.PROMO,
-            'is_read': False,
-        }
-        
-        # Only set video-related fields if video_uid is available
-        if video_uid:
-            notification_kwargs['target_video_slug'] = str(video_uid)
-            notification_kwargs['target_url'] = f'/Player/{video_uid}'
-        
-        user.notifications.create(**notification_kwargs)
     
-    logger.info(f"Push notifications sent: {sent_count}, failed: {failed_count}")
+    # Mark DB flag so retries won't re-send
+    if video_id:
+        try:
+            Video.objects.filter(id=video_id).update(notification_sent=True)
+        except Exception:
+            pass
+    
+    logger.info(f"Push notifications: {sent_count} sent, {failed_count} failed")
 
 @celery_app.task(bind=True, max_retries=2, retry_backoff=30)
 def notify_user_of_reply(self, commenter_user_id: int, replier_name: str, comment_text: str, video_uid: str, video_title: str):
@@ -698,6 +732,7 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
         notification_metadata = {
             'type': 'video_upload',
             'video_id': str(video.uid),
+            'db_video_id': video.id,
             'video_title': video.title or '',
             'video_thumbnail': thumbnail_key,
             'video_category': category_name,
@@ -705,6 +740,7 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
             'video_duration': str(int(video.duration.total_seconds())) if video.duration else '0',
             'video_created_at': video.created_at.isoformat() if video.created_at else '',
             'master_playlist': f"{getattr(settings, 'BASE_URL', 'http://127.0.0.1:8000')}/streaming/hls/{video.uid}/master.m3u8" if video.hls_master_playlist else '',
+            'thumbnail_url': video.thumbnail.url if video.thumbnail else '',
         }
         
         send_push_notification.delay(

@@ -11,6 +11,15 @@ from apps.analytics.serializers.notification import NotificationSerializer
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+def unread_notification_count(request):
+    """Return count of unread notifications for badge display."""
+    close_old_connections()
+    count = Notification.objects.filter(user=request.user, is_read=False).count()
+    return success_response({'unread_count': count}, message='OK')
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def list_notifications(request):
     close_old_connections()
     

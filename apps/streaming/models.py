@@ -109,6 +109,7 @@ class Video(BaseModel):
     dislikes_count = models.IntegerField(default=0)
     is_published = models.BooleanField(default=False)
     is_live = models.BooleanField(default=False)
+    notification_sent = models.BooleanField(default=False, help_text='Whether push notification has been sent for this video')
     
     def __str__(self):
         return self.title
