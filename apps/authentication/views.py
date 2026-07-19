@@ -540,6 +540,7 @@ def refresh(request):
     
     response = success_response(data={
         'access_token': str(access_token),
+        'refresh_token': str(refresh),
     })
     
     response.set_cookie(
