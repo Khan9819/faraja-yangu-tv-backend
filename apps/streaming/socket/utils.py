@@ -159,6 +159,13 @@ def send_video_complete(video_id: int, message: str = "Video processing complete
         hls_path: Path to the HLS files
     """
     try:
+        # Update DB status to completed
+        from apps.streaming.models import Video
+        video = Video.objects.get(id=video_id)
+        video.processing_status = 'completed'
+        video.processing_message = message
+        video.save(update_fields=['processing_status', 'processing_message'])
+        
         channel_layer = get_channel_layer()
         group_name = f"video_progress_{video_id}"
         
