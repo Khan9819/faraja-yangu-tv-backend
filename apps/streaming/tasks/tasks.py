@@ -178,11 +178,28 @@ def _send_notification(fcm_token: str, title: str, body: str, data: dict = None)
     string_data.setdefault('title', title)
     string_data.setdefault('body', body)
     
-    # Normalize thumbnail URL to public CMS proxy URL
+    # Generate a fresh signed URL for the thumbnail (R2 files are private)
+    normalized_thumbnail = ''
     raw_thumbnail = data.get('video_thumbnail', '') if data else ''
-    normalized_thumbnail = _normalize_media_url(raw_thumbnail) if raw_thumbnail else ''
-    if normalized_thumbnail:
-        string_data['video_thumbnail'] = normalized_thumbnail
+    if raw_thumbnail and raw_thumbnail != 'None' and raw_thumbnail != '':
+        try:
+            import boto3
+            s3 = boto3.client(
+                's3',
+                endpoint_url=settings.AWS_S3_ENDPOINT_URL,
+                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+                region_name=getattr(settings, 'AWS_S3_REGION_NAME', 'auto'),
+            )
+            normalized_thumbnail = s3.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': settings.AWS_STORAGE_BUCKET_NAME, 'Key': raw_thumbnail},
+                ExpiresIn=604800,  # 7 days
+            )
+            string_data['video_thumbnail'] = normalized_thumbnail
+            logger.info(f"Generated signed thumbnail URL valid for 7 days")
+        except Exception as e:
+            logger.warning(f"Failed to generate signed thumbnail URL: {e}")
     
     android_config = messaging.AndroidConfig(
         priority='high',
@@ -208,6 +225,11 @@ def _send_notification(fcm_token: str, title: str, body: str, data: dict = None)
     )
     
     message = messaging.Message(
+        notification=messaging.Notification(
+            title=title,
+            body=body,
+            image=normalized_thumbnail or None,
+        ),
         data=string_data,
         token=fcm_token,
         android=android_config,
@@ -665,18 +687,19 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
         category_name = getattr(video.category, 'name', 'Uncategorized') if video.category else 'Uncategorized'
         
         # Build enriched metadata for deep-link support
-        thumbnail_url = ''
+        # Store the raw thumbnail S3 key — _send_notification will generate a signed URL at send-time
+        thumbnail_key = ''
         if video.thumbnail:
             try:
-                thumbnail_url = video.thumbnail.url
+                thumbnail_key = video.thumbnail.name
             except Exception:
-                thumbnail_url = ''
+                thumbnail_key = ''
         
         notification_metadata = {
             'type': 'video_upload',
             'video_id': str(video.uid),
             'video_title': video.title or '',
-            'video_thumbnail': thumbnail_url,
+            'video_thumbnail': thumbnail_key,
             'video_category': category_name,
             'video_description': video.description or '',
             'video_duration': str(int(video.duration.total_seconds())) if video.duration else '0',
