@@ -3,6 +3,11 @@
 # Ensure timezone is correctly set
 export TZ=Africa/Dar_es_Salaam
 
+# Run database migrations before starting services
+echo "Running database migrations..."
+python3.12 manage.py migrate --noinput
+echo "Migrations complete."
+
 # Create logs directory if it doesn't exist
 mkdir -p logs
 
