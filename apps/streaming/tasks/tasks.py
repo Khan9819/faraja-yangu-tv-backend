@@ -266,6 +266,8 @@ def send_push_notification(self, target: UserGroupTypes, notification_type: Noti
     """
     close_old_connections()
     
+    from django.core.cache import cache
+    
     video_uid = metadata.get('video_id') if metadata else None
     video_id = metadata.get('db_video_id') if metadata else None
     
