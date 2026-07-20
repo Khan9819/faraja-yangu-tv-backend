@@ -1,11 +1,26 @@
 from django.contrib import admin
 from django.urls import path, include
-from django.http import HttpResponseRedirect, JsonResponse
+from django.http import JsonResponse
+from django.shortcuts import render, get_object_or_404
+from django.conf import settings
 
 PLAY_STORE_URL = 'https://play.google.com/store/apps/details?id=co.tz.farajayangutv.app'
 
-def video_redirect(request, uid):
-    return HttpResponseRedirect(PLAY_STORE_URL)
+def video_og_page(request, uid):
+    from apps.streaming.models import Video
+    video = get_object_or_404(Video, uid=uid, is_published=True)
+    og_image = ''
+    if video.thumbnail:
+        og_image = video.thumbnail.url  # full R2 URL
+    description = (video.description[:280] + '…') if len(video.description) > 280 else video.description
+    og_url = request.build_absolute_uri()
+    return render(request, 'streaming/video_og.html', {
+        'video': video,
+        'og_image': og_image,
+        'og_url': og_url,
+        'description': description,
+        'play_store_url': PLAY_STORE_URL,
+    })
 
 def assetlinks(request):
     data = [{
@@ -32,5 +47,5 @@ urlpatterns = [
     path('profile/', include('apps.profile.urls')),
     path('management/', include('apps.management.urls')),
     path('.well-known/assetlinks.json', assetlinks),
-    path('video/<str:uid>/', video_redirect),
+    path('video/<str:uid>/', video_og_page, name='video-og'),
 ]
