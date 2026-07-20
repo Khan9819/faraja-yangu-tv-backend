@@ -469,6 +469,8 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
                                checkpoint={'stage': 'converting'})
             stage = 'converting'  # Skip download stage
         else:
+            if local_video_path:
+                logger.warning(f"Local video path provided but file does not exist: {local_video_path}. Will fall back to R2 download.")
             video_file_path = os.path.join(temp_dir, f"video_{video_id}_original.mp4")
         
         # Validate disk space before starting
@@ -606,6 +608,11 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
         
         # Stage 3: Upload HLS files (skip if already uploaded)
         if stage in ('start', 'downloading', 'converting', 'uploading'):
+            # Guard: confirm the local HLS directory actually exists before attempting upload
+            if local_hls_dir and not os.path.isdir(local_hls_dir):
+                logger.error(f"Local HLS directory missing at {local_hls_dir} — stages may have been skipped incorrectly (stage={stage}).")
+                if stage in ('uploading', 'converting'):
+                    raise Exception(f"HLS output directory missing at {local_hls_dir} — conversion did not produce output")
             # Check if already uploaded by checking remote storage
             try:
                 remote_master = f"{hls_output_dir}/master.m3u8"
@@ -669,6 +676,26 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
                 time.sleep(verify_delay)
                 verify_delay = min(verify_delay * 2, 30)
         if not master_found:
+            # Diagnostic: check what files actually exist in the HLS directory
+            try:
+                if hasattr(default_storage, 'connection') and hasattr(default_storage.connection, 'meta'):
+                    s3_client = default_storage.connection.meta.client
+                    paginator = s3_client.get_paginator('list_objects_v2')
+                    pages = paginator.paginate(Bucket=default_storage.bucket_name, Prefix=f"{hls_output_dir}/")
+                    r2_files = []
+                    for page in pages:
+                        for obj in page.get('Contents', []):
+                            r2_files.append(obj['Key'])
+                    logger.error(f"Stage4 diagnostic: found {len(r2_files)} files in R2 at {hls_output_dir}/: {r2_files[:20]}...")
+                else:
+                    # Fallback: check if the local HLS dir still exists and what's in it
+                    local_master = os.path.join(local_hls_dir, 'master.m3u8') if local_hls_dir else None
+                    if local_master and os.path.exists(local_master):
+                        logger.error(f"Stage4 diagnostic: master.m3u8 EXISTS locally at {local_master} but NOT in R2 at {remote_master}")
+                    else:
+                        logger.error(f"Stage4 diagnostic: master.m3u8 MISSING locally at {local_master}")
+            except Exception as diag_err:
+                logger.error(f"Stage4 diagnostic error: {diag_err}")
             raise Exception(f"HLS upload verification failed after {max_verify_attempts} attempts: master.m3u8 not found at {remote_master}")
         
         # Update video object with HLS information

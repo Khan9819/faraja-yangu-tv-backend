@@ -18,23 +18,37 @@ from apps.streaming.services.video_presets import get_enabled_hls_variants
 logger = logging.getLogger(__name__)
 
 
+def _is_local_path(path: str) -> bool:
+    """Check if a path is a local filesystem path vs a remote R2/S3 key."""
+    if not path:
+        return False
+    # Local paths start with / (unix) or a drive letter (Windows)
+    return path.startswith('/') or (len(path) > 1 and path[1] == ':')
+
 def build_conversion_job(video: Video, source_key: str | None = None) -> dict:
     source_key = source_key or (video.video.name if video.video else None)
     if not source_key:
         raise ValueError(f"No source video file for video {video.id}")
 
+    is_local = _is_local_path(source_key)
+
     job_id = str(uuid.uuid4())
+
+    source = {
+        "key": source_key,
+    }
+    if is_local:
+        source["type"] = "local"
+    else:
+        source["type"] = "r2"
+        source["bucket"] = settings.AWS_STORAGE_BUCKET_NAME
+        source["endpoint"] = settings.AWS_S3_ENDPOINT_URL
 
     return {
         "job_id": job_id,
         "video_id": video.id,
         "video_uid": str(video.uid),
-        "source": {
-            "type": "r2",
-            "bucket": settings.AWS_STORAGE_BUCKET_NAME,
-            "key": source_key,
-            "endpoint": settings.AWS_S3_ENDPOINT_URL,
-        },
+        "source": source,
         "output": {
             "bucket": settings.AWS_STORAGE_BUCKET_NAME,
             "base_path": f"videos/hls/{video.slug or video.uid}",
