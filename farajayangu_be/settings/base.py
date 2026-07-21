@@ -368,7 +368,7 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')  # Local media root for temp proces
 # Encoder preset: ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow
 HLS_ENCODER_PRESET = env('HLS_ENCODER_PRESET', default='superfast')
 # Number of FFmpeg threads (0 = auto uses all CPU cores for maximum performance)
-HLS_FFMPEG_THREADS = env.int('HLS_FFMPEG_THREADS', default=0)
+HLS_FFMPEG_THREADS = env.int('HLS_FFMPEG_THREADS', default=4)  # 4 threads = leave 2 cores for system (6-core server)
 # Skip encoding variants higher than source resolution (saves CPU time)
 HLS_SKIP_UPSCALING = env.bool('HLS_SKIP_UPSCALING', default=True)
 # Quality variants to generate (comma-separated): 1080p,720p,480p,360p
