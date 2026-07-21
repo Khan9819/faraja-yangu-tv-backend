@@ -557,8 +557,9 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
             logger.warning(f"Could not validate disk space: {str(e)}")
         
         # Stage 1: Download video from R2 (skip if local path provided or already downloaded)
-        if stage in ('start', 'downloading'):
-            if not os.path.exists(video_file_path) or stage == 'start':
+        # 'assembled' stage comes from assemble_chunks_task checkpoint — treat as fresh start
+        if stage in ('start', 'downloading', 'assembled'):
+            if not os.path.exists(video_file_path) or stage in ('start', 'assembled'):
                 send_video_progress(video_id, "downloading", 0, "Starting HLS conversion...",
                                    checkpoint={'stage': 'downloading'})
                 logger.info(f"Starting HLS conversion for video {video_id}: {video.title}")
@@ -587,7 +588,7 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
                                checkpoint={'stage': 'converting'})
         
         # Stage 2: Convert to HLS (skip if already converted)
-        if stage in ('start', 'downloading', 'converting'):
+        if stage in ('start', 'downloading', 'converting', 'assembled'):
             # Check if HLS files already exist locally
             master_playlist_local = os.path.join(local_hls_dir, 'master.m3u8')
             if not os.path.exists(master_playlist_local):
@@ -672,11 +673,11 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
                                checkpoint={'stage': 'uploading'})
         
         # Stage 3: Upload HLS files (skip if already uploaded)
-        if stage in ('start', 'downloading', 'converting', 'uploading'):
+        if stage in ('start', 'downloading', 'converting', 'uploading', 'assembled'):
             # Guard: confirm the local HLS directory actually exists before attempting upload
             if local_hls_dir and not os.path.isdir(local_hls_dir):
                 logger.error(f"Local HLS directory missing at {local_hls_dir} — stages may have been skipped incorrectly (stage={stage}).")
-                if stage in ('uploading', 'converting'):
+                if stage in ('uploading', 'converting', 'assembled'):
                     raise Exception(f"HLS output directory missing at {local_hls_dir} — conversion did not produce output")
             # Check if already uploaded by checking remote storage
             try:
