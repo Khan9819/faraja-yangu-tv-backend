@@ -708,7 +708,7 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
             send_video_progress(video_id, "uploading", 70, "Conversion complete, uploading HLS files...",
                                checkpoint={'stage': 'uploading'})
         
-        # Stage 3: Upload HLS files (skip if already uploaded)
+         # Stage 3: Upload HLS files (skip if already uploaded)
         if stage in ('start', 'downloading', 'converting', 'uploading', 'assembled'):
             # Guard: confirm the local HLS directory actually exists before attempting upload
             if local_hls_dir and not os.path.isdir(local_hls_dir):
@@ -724,6 +724,51 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
                     send_video_progress(video_id, "uploading", 90, "HLS files already uploaded",
                                        checkpoint={'stage': 'finalizing'})
                 else:
+                    # Regenerate master playlist from ACTUAL local files before upload.
+                    # This ensures master.m3u8 matches what was actually produced,
+                    # not an empty list from a failed/crashed processor run.
+                    try:
+                        from apps.streaming.services.video_presets import get_enabled_hls_variants
+                        import os as _os
+                        master_path = _os.path.join(local_hls_dir, 'master.m3u8')
+                        existing = _os.path.exists(master_path)
+                        master_size = _os.path.getsize(master_path) if existing else 0
+                        logger.info(f"Master playlist before upload: exists={existing}, size={master_size}")
+                        
+                        if not existing or master_size < 100:
+                            # Regenerate from actual variant directories in local_hls_dir
+                            logger.info(f"Regenerating master playlist from local variant directories for video {video_id}")
+                            variants_found = []
+                            for preset in get_enabled_hls_variants():
+                                variant_name = preset['name']
+                                variant_playlist = _os.path.join(local_hls_dir, variant_name, f"{variant_name}.m3u8")
+                                if _os.path.exists(variant_playlist):
+                                    # Calculate bandwidth from segment files
+                                    bandwidth = 800000  # default fallback
+                                    try:
+                                        seg_files = [f for f in _os.listdir(_os.path.join(local_hls_dir, variant_name)) if f.endswith('.ts')]
+                                        if seg_files:
+                                            total_bytes = sum(_os.path.getsize(_os.path.join(local_hls_dir, variant_name, f)) for f in seg_files[:5])
+                                            avg_seg = total_bytes / len(seg_files[:5])
+                                            bandwidth = int((avg_seg * 8) / 6)  # bits per second for ~6s segments
+                                    except Exception:
+                                        pass
+                                    variants_found.append({
+                                        'bandwidth': str(max(bandwidth, 500000)),
+                                        'resolution': preset['resolution'],
+                                        'playlist': f"{variant_name}/{variant_name}.m3u8"
+                                    })
+                            
+                            if variants_found:
+                                with open(master_path, 'w') as f:
+                                    f.write('#EXTM3U\n')
+                                    f.write('#EXT-X-VERSION:3\n')
+                                    for v in variants_found:
+                                        f.write(f"#EXT-X-STREAM-INF:BANDWIDTH={v['bandwidth']},RESOLUTION={v['resolution']}\n")
+                                        f.write(f"{v['playlist']}\n")
+                                logger.info(f"Regenerated master playlist with {len(variants_found)} variants")
+                    except Exception as regen_err:
+                        logger.warning(f"Could not regenerate master playlist: {regen_err}")
                     send_video_progress(video_id, "uploading", 75, "Uploading HLS files to storage...",
                                        checkpoint={'stage': 'uploading'})
                     try:
