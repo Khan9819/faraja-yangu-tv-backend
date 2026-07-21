@@ -1233,11 +1233,9 @@ def stream_hls(request, video_slug, file_path):
             # Return modified playlist
             response = HttpResponse(modified_content, content_type=content_type)
         elif file_path.endswith('.ts'):
-            # Redirect .ts segment requests to a presigned R2 URL instead of proxying
-            from apps.streaming.services.hls_service import generate_signed_segment_url
-            from django.shortcuts import redirect
-            signed_url = generate_signed_segment_url(storage_path, expires_in=3600)
-            return redirect(signed_url)
+            # Stream .ts segment directly from R2 via Django
+            file_obj = default_storage.open(storage_path, 'rb')
+            response = FileResponse(file_obj, content_type=content_type)
         else:
             # For other files, stream directly
             file_obj = default_storage.open(storage_path, 'rb')

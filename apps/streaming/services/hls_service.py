@@ -248,21 +248,12 @@ class HLSService:
             # If it's a file reference (not a URL), rewrite it
             if stripped and not stripped.startswith('http'):
                 if stripped.endswith('.ts'):
-                    # Segment reference → presigned R2 URL (bypass Django proxy)
+                    # Segment reference -> proxy through Django (more reliable than R2 presigned URLs)
                     current_dir = os.path.dirname(current_path)
                     if current_dir:
-                        storage_key = f"{self.base_storage_path}/{current_dir}/{stripped}"
+                        new_line = f"{self.backend_url}/streaming/hls/{self.video_uid}/{current_dir}/{stripped}"
                     else:
-                        storage_key = f"{self.base_storage_path}/{stripped}"
-                    try:
-                        new_line = generate_signed_segment_url(storage_key, expires_in=3600)
-                    except Exception as e:
-                        logger.warning(f"Failed to generate signed URL for {storage_key}: {e}")
-                        # Fallback to backend proxy
-                        if current_dir:
-                            new_line = f"{self.backend_url}/streaming/hls/{self.video_uid}/{current_dir}/{stripped}"
-                        else:
-                            new_line = f"{self.backend_url}/streaming/hls/{self.video_uid}/{stripped}"
+                        new_line = f"{self.backend_url}/streaming/hls/{self.video_uid}/{stripped}"
                 elif '/' in stripped:
                     # Variant playlist reference (e.g., "1080p/1080p.m3u8") → backend proxy
                     new_line = f"{self.backend_url}/streaming/hls/{self.video_uid}/{stripped}"
