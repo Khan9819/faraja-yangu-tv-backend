@@ -39,6 +39,7 @@ class NotificationTypes:
 # which would exhaust DB and Redis connection pools for other requests.
 MAX_CONCURRENT_VIDEO_PROCESSING = 2
 VIDEO_PROCESSING_SEMAPHORE_KEY = "video_processing_semaphore"
+SEMAPHORE_TTL = 7200  # 2 hours — auto-expires if counter gets stuck (worker crash without release)
 
 
 def _acquire_processing_slot(video_id: int, task_id: str) -> bool:
@@ -59,7 +60,11 @@ def _acquire_processing_slot(video_id: int, task_id: str) -> bool:
             return False
         # Try to atomically increment
         new_count = cache.incr(VIDEO_PROCESSING_SEMAPHORE_KEY)
-        if new_count > MAX_CONCURRENT_VIDEO_PROCESSING:
+        if new_count is None:
+            # Key expired or doesn't exist — set initial value
+            cache.set(VIDEO_PROCESSING_SEMAPHORE_KEY, 1, timeout=SEMAPHORE_TTL)
+            new_count = 1
+        elif new_count > MAX_CONCURRENT_VIDEO_PROCESSING:
             # Overshot — decrement back and fail
             cache.decr(VIDEO_PROCESSING_SEMAPHORE_KEY)
             logger.warning(
@@ -67,12 +72,18 @@ def _acquire_processing_slot(video_id: int, task_id: str) -> bool:
                 f"cannot start task {task_id} for video {video_id}"
             )
             return False
+        else:
+            # Refresh TTL so key doesn't expire mid-processing
+            try:
+                cache.touch(VIDEO_PROCESSING_SEMAPHORE_KEY, SEMAPHORE_TTL)
+            except Exception:
+                pass
         logger.info(f"Acquired video processing slot ({new_count}/{MAX_CONCURRENT_VIDEO_PROCESSING}) for task {task_id}")
         return True
     except ValueError:
         # Key doesn't exist yet — set initial value
         try:
-            cache.set(VIDEO_PROCESSING_SEMAPHORE_KEY, 1, timeout=86400)
+            cache.set(VIDEO_PROCESSING_SEMAPHORE_KEY, 1, timeout=SEMAPHORE_TTL)
             return True
         except Exception:
             return False
@@ -87,8 +98,17 @@ def _release_processing_slot(task_id: str) -> None:
     try:
         current = cache.get(VIDEO_PROCESSING_SEMAPHORE_KEY, 0)
         if current > 0:
-            cache.decr(VIDEO_PROCESSING_SEMAPHORE_KEY)
-            logger.info(f"Released video processing slot ({current-1}/{MAX_CONCURRENT_VIDEO_PROCESSING}) for task {task_id}")
+            new_count = cache.decr(VIDEO_PROCESSING_SEMAPHORE_KEY)
+            if new_count is not None and new_count <= 0:
+                # Counter at zero — delete key to prevent stale counters
+                cache.delete(VIDEO_PROCESSING_SEMAPHORE_KEY)
+            else:
+                # Refresh TTL so active slots don't expire
+                try:
+                    cache.touch(VIDEO_PROCESSING_SEMAPHORE_KEY, SEMAPHORE_TTL)
+                except Exception:
+                    pass
+            logger.info(f"Released video processing slot ({max(new_count or 0, 0)}/{MAX_CONCURRENT_VIDEO_PROCESSING}) for task {task_id}")
     except Exception as e:
         logger.error(f"Error releasing processing slot: {e}")    
 
