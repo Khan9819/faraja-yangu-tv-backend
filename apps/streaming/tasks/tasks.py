@@ -477,10 +477,19 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
     from django.core.cache import cache
     close_old_connections()
     
-    # Acquire semaphore slot to limit concurrent video processing
+    # Acquire semaphore slot to limit concurrent video processing.
+    # Poll with sleep instead of self.retry() to avoid consuming Celery max_retries.
     acquired_slot = _acquire_processing_slot(video_id, self.request.id)
     if not acquired_slot:
-        raise self.retry(countdown=300)  # Retry in 5 minutes
+        logger.info(f"Video {video_id}: waiting for processing slot (max 30 min)...")
+        for _ in range(180):  # 180 iterations * 10s = 30 min max wait
+            time.sleep(10)
+            acquired_slot = _acquire_processing_slot(video_id, self.request.id)
+            if acquired_slot:
+                break
+        if not acquired_slot:
+            logger.error(f"Video {video_id}: could not acquire processing slot after 30 min wait")
+            return {'success': False, 'error': 'All video processing slots busy, try again later'}
     
     # Initialize database update queue for async writes
     db_queue = DatabaseUpdateQueue()
@@ -1115,13 +1124,19 @@ def assemble_chunks_task(self, video_id: int, filename: str):
 
     close_old_connections()
     
-    # Acquire semaphore slot to limit concurrent video processing
-    # This prevents large videos from exhausting all workers + connections
+    # Acquire semaphore slot to limit concurrent video processing.
+    # Poll with sleep instead of self.retry() to avoid consuming Celery max_retries.
     acquired_slot = _acquire_processing_slot(video_id, self.request.id)
     if not acquired_slot:
-        # Re-queue with delay — all slots are full
-        logger.warning(f"Video processing slots full, re-queuing task for video {video_id}")
-        raise self.retry(countdown=300)  # Retry in 5 minutes
+        logger.info(f"Video {video_id}: waiting for processing slot (max 30 min)...")
+        for _ in range(180):  # 180 iterations * 10s = 30 min max wait
+            time.sleep(10)
+            acquired_slot = _acquire_processing_slot(video_id, self.request.id)
+            if acquired_slot:
+                break
+        if not acquired_slot:
+            logger.error(f"Video {video_id}: could not acquire processing slot after 30 min wait")
+            return {'success': False, 'error': 'All video processing slots busy, try again later'}
     
     # Idempotency lock: prevent duplicate assembly tasks for the same video
     lock_key = f"chunk_assembly_lock_{video_id}"
