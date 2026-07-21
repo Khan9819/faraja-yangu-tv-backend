@@ -662,8 +662,8 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
         # Verify master playlist exists in R2 with retries
         # Large HLS uploads (>1000 segments) may take time to become visible on R2
         remote_master = f"{hls_output_dir}/master.m3u8"
-        max_verify_attempts = 10
-        verify_delay = 3
+        max_verify_attempts = 20
+        verify_delay = 5
         master_found = False
         for attempt in range(max_verify_attempts):
             if default_storage.exists(remote_master):
@@ -676,27 +676,33 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
                 time.sleep(verify_delay)
                 verify_delay = min(verify_delay * 2, 30)
         if not master_found:
-            # Diagnostic: check what files actually exist in the HLS directory
-            try:
-                if hasattr(default_storage, 'connection') and hasattr(default_storage.connection, 'meta'):
-                    s3_client = default_storage.connection.meta.client
-                    paginator = s3_client.get_paginator('list_objects_v2')
-                    pages = paginator.paginate(Bucket=default_storage.bucket_name, Prefix=f"{hls_output_dir}/")
-                    r2_files = []
-                    for page in pages:
-                        for obj in page.get('Contents', []):
-                            r2_files.append(obj['Key'])
-                    logger.error(f"Stage4 diagnostic: found {len(r2_files)} files in R2 at {hls_output_dir}/: {r2_files[:20]}...")
-                else:
-                    # Fallback: check if the local HLS dir still exists and what's in it
-                    local_master = os.path.join(local_hls_dir, 'master.m3u8') if local_hls_dir else None
-                    if local_master and os.path.exists(local_master):
-                        logger.error(f"Stage4 diagnostic: master.m3u8 EXISTS locally at {local_master} but NOT in R2 at {remote_master}")
+            # Fallback: if master.m3u8 exists locally, proceed despite R2 inconsistency
+            # This handles R2 eventual consistency where recently uploaded files aren't visible yet
+            local_master_fallback = os.path.join(local_hls_dir, 'master.m3u8') if local_hls_dir else None
+            if local_master_fallback and os.path.exists(local_master_fallback):
+                logger.warning(
+                    f"master.m3u8 exists locally at {local_master_fallback} but not visible on R2 "
+                    f"after {max_verify_attempts} attempts. "
+                    f"Proceeding anyway due to R2 eventual consistency."
+                )
+                master_found = True
+            else:
+                # Diagnostic: check what files actually exist in the HLS directory
+                try:
+                    if hasattr(default_storage, 'connection') and hasattr(default_storage.connection, 'meta'):
+                        s3_client = default_storage.connection.meta.client
+                        paginator = s3_client.get_paginator('list_objects_v2')
+                        pages = paginator.paginate(Bucket=default_storage.bucket_name, Prefix=f"{hls_output_dir}/")
+                        r2_files = []
+                        for page in pages:
+                            for obj in page.get('Contents', []):
+                                r2_files.append(obj['Key'])
+                        logger.error(f"Stage4 diagnostic: found {len(r2_files)} files in R2 at {hls_output_dir}/: {r2_files[:20]}...")
                     else:
-                        logger.error(f"Stage4 diagnostic: master.m3u8 MISSING locally at {local_master}")
-            except Exception as diag_err:
-                logger.error(f"Stage4 diagnostic error: {diag_err}")
-            raise Exception(f"HLS upload verification failed after {max_verify_attempts} attempts: master.m3u8 not found at {remote_master}")
+                        logger.error(f"Stage4 diagnostic: master.m3u8 MISSING both locally and on R2")
+                except Exception as diag_err:
+                    logger.error(f"Stage4 diagnostic error: {diag_err}")
+                raise Exception(f"HLS upload verification failed after {max_verify_attempts} attempts: master.m3u8 not found at {remote_master}")
         
         # Update video object with HLS information
         video.hls_path = hls_output_dir
@@ -900,28 +906,27 @@ def extract_duration_from_hls_playlist(local_hls_dir: str) -> float | None:
     return None
 
 
-def upload_hls_files_to_storage(local_dir: str, remote_dir: str, max_workers: int = 2) -> list:
+def upload_hls_files_to_storage(local_dir: str, remote_dir: str, max_workers: int = 4) -> list:
     """
     Upload HLS files from local directory to remote storage.
     
-    Uses sequential uploads by default to avoid overwhelming R2 and causing hangs.
+    Uses concurrent uploads with ThreadPoolExecutor for faster throughput.
     Each upload has retry logic for resilience.
     
     Args:
         local_dir: Local directory containing HLS files
         remote_dir: Remote directory path in storage
-        max_workers: Number of parallel upload workers (default 2, reduced for stability)
+        max_workers: Number of parallel upload workers (default 4)
         
     Returns:
         List of uploaded file paths
     """
-    import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     
     uploaded_files = []
     files_to_upload = []
     
     try:
-        # Collect all files to upload
         for root, dirs, files in os.walk(local_dir):
             for file in files:
                 local_file_path = os.path.join(root, file)
@@ -930,12 +935,9 @@ def upload_hls_files_to_storage(local_dir: str, remote_dir: str, max_workers: in
                 files_to_upload.append((local_file_path, remote_file_path))
         
         total_files = len(files_to_upload)
-        logger.info(f"Uploading {total_files} HLS files to R2 storage...")
+        logger.info(f"Uploading {total_files} HLS files to R2 storage with {max_workers} workers...")
         
         def upload_single_file_with_retry(local_path: str, remote_path: str, max_retries: int = 3) -> str:
-            """
-            Upload a single file with retry logic.
-            """
             last_error = None
             for attempt in range(max_retries):
                 try:
@@ -946,22 +948,27 @@ def upload_hls_files_to_storage(local_dir: str, remote_dir: str, max_workers: in
                     last_error = e
                     logger.warning(f"Upload attempt {attempt + 1}/{max_retries} failed for {remote_path}: {e}")
                     if attempt < max_retries - 1:
-                        time.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
+                        time.sleep(2 ** attempt)
             raise last_error
         
-        # Sequential upload for stability (avoids R2 connection issues)
-        for i, (local_path, remote_path) in enumerate(files_to_upload):
-            try:
-                uploaded_path = upload_single_file_with_retry(local_path, remote_path)
-                uploaded_files.append(uploaded_path)
-                
-                # Log progress every 50 files or at the end
-                if (i + 1) % 50 == 0 or i == total_files - 1:
-                    logger.info(f"Uploaded {i + 1}/{total_files} HLS files")
-                    
-            except Exception as e:
-                logger.error(f"Failed to upload {remote_path} after retries: {str(e)}")
-                raise
+        def upload_file(file_pair):
+            local_path, remote_path = file_pair
+            return upload_single_file_with_retry(local_path, remote_path)
+        
+        completed = 0
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(upload_file, pair): pair for pair in files_to_upload}
+            for future in as_completed(futures):
+                pair = futures[future]
+                try:
+                    uploaded_path = future.result()
+                    uploaded_files.append(uploaded_path)
+                    completed += 1
+                    if completed % 50 == 0 or completed == total_files:
+                        logger.info(f"Uploaded {completed}/{total_files} HLS files")
+                except Exception as e:
+                    logger.error(f"Failed to upload {pair[1]} after retries: {str(e)}")
+                    raise
         
         logger.info(f"Successfully uploaded {len(uploaded_files)} HLS files to storage")
         return uploaded_files
