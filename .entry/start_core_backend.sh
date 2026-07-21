@@ -43,6 +43,21 @@ GUNICORN_PID=$!
 
 echo "Gunicorn started with PID: $GUNICORN_PID"
 
+
+# --- Purge old Celery state from Redis (zombie workers + stale tasks) ---
+# CapRover rolling deploys leave zombie worker registrations that steal tasks.
+# This ensures a clean slate before starting new workers.
+if [ -n "$REDIS_HOST" ] && [ -n "$REDIS_PASSWORD" ]; then
+    echo "Purging stale Celery data from Redis..."
+    redis-cli -h "$REDIS_HOST" -a "$REDIS_PASSWORD" --no-auth-warning -n 0 \
+        --scan --pattern "celery*" 2>/dev/null | xargs -r redis-cli -h "$REDIS_HOST" -a "$REDIS_PASSWORD" --no-auth-warning -n 0 DEL 2>/dev/null
+    redis-cli -h "$REDIS_HOST" -a "$REDIS_PASSWORD" --no-auth-warning -n 0 \
+        --scan --pattern "unacked*" 2>/dev/null | xargs -r redis-cli -h "$REDIS_HOST" -a "$REDIS_PASSWORD" --no-auth-warning -n 0 DEL 2>/dev/null
+    redis-cli -h "$REDIS_HOST" -a "$REDIS_PASSWORD" --no-auth-warning -n 0 \
+        --scan --pattern "_kombu*" 2>/dev/null | xargs -r redis-cli -h "$REDIS_HOST" -a "$REDIS_PASSWORD" --no-auth-warning -n 0 DEL 2>/dev/null
+    echo "  Redis cleanup complete."
+fi
+
 # Start Celery workers in background
 CELERY_WORKER_LOG="logs/celery_video_worker.log"
 CELERY_GENERAL_LOG="logs/celery_general_worker.log"
