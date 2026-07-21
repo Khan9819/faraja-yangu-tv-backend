@@ -31,7 +31,66 @@ class UserGroupTypes:
 
 class NotificationTypes:
     NEW_VIDEO = "new_video"
-    COMMENT_REPLY = "comment_reply"    
+    COMMENT_REPLY = "comment_reply"
+
+
+# Maximum concurrent video processing tasks (assembly + conversion combined).
+# Prevents all workers from being occupied by large videos simultaneously,
+# which would exhaust DB and Redis connection pools for other requests.
+MAX_CONCURRENT_VIDEO_PROCESSING = 2
+VIDEO_PROCESSING_SEMAPHORE_KEY = "video_processing_semaphore"
+
+
+def _acquire_processing_slot(video_id: int, task_id: str) -> bool:
+    """Try to acquire a slot in the video processing semaphore.
+    
+    Uses Redis to track how many video processing tasks are currently running.
+    Returns True if a slot was acquired, False if the limit is reached.
+    """
+    from django.core.cache import cache
+    try:
+        # Get current count of active processing tasks
+        active = cache.get(VIDEO_PROCESSING_SEMAPHORE_KEY, 0)
+        if active >= MAX_CONCURRENT_VIDEO_PROCESSING:
+            logger.warning(
+                f"Video processing slot limit reached ({active}/{MAX_CONCURRENT_VIDEO_PROCESSING}), "
+                f"cannot start task {task_id} for video {video_id}"
+            )
+            return False
+        # Try to atomically increment
+        new_count = cache.incr(VIDEO_PROCESSING_SEMAPHORE_KEY)
+        if new_count > MAX_CONCURRENT_VIDEO_PROCESSING:
+            # Overshot — decrement back and fail
+            cache.decr(VIDEO_PROCESSING_SEMAPHORE_KEY)
+            logger.warning(
+                f"Video processing slot race condition: count={new_count}, "
+                f"cannot start task {task_id} for video {video_id}"
+            )
+            return False
+        logger.info(f"Acquired video processing slot ({new_count}/{MAX_CONCURRENT_VIDEO_PROCESSING}) for task {task_id}")
+        return True
+    except ValueError:
+        # Key doesn't exist yet — set initial value
+        try:
+            cache.set(VIDEO_PROCESSING_SEMAPHORE_KEY, 1, timeout=86400)
+            return True
+        except Exception:
+            return False
+    except Exception as e:
+        logger.error(f"Error acquiring processing slot: {e}")
+        return True  # Allow on error to avoid blocking
+
+
+def _release_processing_slot(task_id: str) -> None:
+    """Release a slot in the video processing semaphore."""
+    from django.core.cache import cache
+    try:
+        current = cache.get(VIDEO_PROCESSING_SEMAPHORE_KEY, 0)
+        if current > 0:
+            cache.decr(VIDEO_PROCESSING_SEMAPHORE_KEY)
+            logger.info(f"Released video processing slot ({current-1}/{MAX_CONCURRENT_VIDEO_PROCESSING}) for task {task_id}")
+    except Exception as e:
+        logger.error(f"Error releasing processing slot: {e}")    
 
 
 class DatabaseUpdateQueue:
@@ -91,6 +150,7 @@ class DatabaseUpdateQueue:
                 except Exception as e:
                     logger.error(f"Error processing database update: {e}", exc_info=True)
                 finally:
+                    close_old_connections()
                     self._queue.task_done()
             except queue.Empty:
                 continue
@@ -416,6 +476,11 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
     import tempfile
     from django.core.cache import cache
     close_old_connections()
+    
+    # Acquire semaphore slot to limit concurrent video processing
+    acquired_slot = _acquire_processing_slot(video_id, self.request.id)
+    if not acquired_slot:
+        raise self.retry(countdown=300)  # Retry in 5 minutes
     
     # Initialize database update queue for async writes
     db_queue = DatabaseUpdateQueue()
@@ -858,7 +923,8 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
         # Retry the task — lock stays held to prevent duplicate from acquiring it
     
     finally:
-        # Always stop the queue and release the lock when task ends
+        # Always release the semaphore slot, stop queue, and release the lock when task ends
+        _release_processing_slot(self.request.id)
         try:
             db_queue.stop(timeout=5)
         except:
@@ -1041,6 +1107,14 @@ def assemble_chunks_task(self, video_id: int, filename: str):
 
     close_old_connections()
     
+    # Acquire semaphore slot to limit concurrent video processing
+    # This prevents large videos from exhausting all workers + connections
+    acquired_slot = _acquire_processing_slot(video_id, self.request.id)
+    if not acquired_slot:
+        # Re-queue with delay — all slots are full
+        logger.warning(f"Video processing slots full, re-queuing task for video {video_id}")
+        raise self.retry(countdown=300)  # Retry in 5 minutes
+    
     # Idempotency lock: prevent duplicate assembly tasks for the same video
     lock_key = f"chunk_assembly_lock_{video_id}"
     lock_acquired = cache.add(lock_key, self.request.id, timeout=10800)
@@ -1147,6 +1221,11 @@ def assemble_chunks_task(self, video_id: int, filename: str):
                             break
                         assembled_file.write(data)
                 
+                # Close stale DB connections periodically to prevent connection pool exhaustion
+                # during long-running assembly (especially for large videos)
+                if i % 20 == 0:
+                    close_old_connections()
+                
                 progress = int(10 + (i + 1) / total_chunks * 70)  # 10-80% for assembly
                 
                 # Save checkpoint every 50 chunks using queue
@@ -1219,6 +1298,7 @@ def assemble_chunks_task(self, video_id: int, filename: str):
         raise
     
     finally:
+        _release_processing_slot(self.request.id)
         try:
             db_queue.stop(timeout=5)
         except:

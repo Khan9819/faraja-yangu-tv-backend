@@ -207,7 +207,7 @@ DATABASES = {
         'PASSWORD': '' if _is_sqlite else DATABASE_PASSWORD,
         'HOST': '' if _is_sqlite else DATABASE_HOST,
         'PORT': '' if _is_sqlite else DATABASE_PORT,
-        'CONN_MAX_AGE': 0 if _is_sqlite else 30,
+        'CONN_MAX_AGE': 0 if _is_sqlite else 60,
         # PostgreSQL-specific options — only applied when not using SQLite
         **({} if _is_sqlite else {
             'OPTIONS': {
@@ -409,15 +409,17 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_TRACK_STARTED = True
-CELERY_TASK_TIME_LIMIT = 35 * 60  # 35 minutes hard limit
-CELERY_TASK_SOFT_TIME_LIMIT = 30 * 60  # 30 minutes soft limit (raises SoftTimeLimitExceeded)
+CELERY_TASK_TIME_LIMIT = 180 * 60  # 3 hours hard limit (tasks set their own, this is the global default)
+CELERY_TASK_SOFT_TIME_LIMIT = 150 * 60  # 2.5 hours soft limit
 
 # Prevent broker connection issues from killing tasks
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_BROKER_TRANSPORT_OPTIONS = {
-    'visibility_timeout': 3600,  # 1 hour - must be > longest task time
+    'visibility_timeout': 14400,  # 4 hours - must be > longest task time (large videos: assembly ~90min + conversion ~90min)
     'socket_timeout': 30,
     'socket_connect_timeout': 30,
+    'max_connections': 50,  # Increased from default ~10 to handle concurrent large video processing
+    'retry_on_timeout': True,
 }
 
 # Task acknowledgment settings for reliability
