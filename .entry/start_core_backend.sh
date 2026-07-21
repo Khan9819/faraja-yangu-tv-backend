@@ -66,7 +66,7 @@ echo "Starting Celery workers..."
 
 celery -A farajayangu_be.celery worker -Q video_processing \
   -n video_worker@%h --pool=prefork --concurrency=2 \
-  --max-tasks-per-child=5 --loglevel=INFO > "$CELERY_WORKER_LOG" 2>&1 &
+  --max-tasks-per-child=50 --loglevel=INFO > "$CELERY_WORKER_LOG" 2>&1 &
 CELERY_VIDEO_PID=$!
 echo "  Video worker started with PID: $CELERY_VIDEO_PID"
 
