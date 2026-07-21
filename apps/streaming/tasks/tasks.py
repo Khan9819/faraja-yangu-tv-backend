@@ -556,10 +556,16 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
         except Exception as e:
             logger.warning(f"Could not validate disk space: {str(e)}")
         
-        # Stage 1: Download video from R2 (skip if local path provided or already downloaded)
-        # 'assembled' stage comes from assemble_chunks_task checkpoint — treat as fresh start
+        # Stage 1: Download video from R2 (skip if local file already assembled or downloaded)
+        # 'assembled' stage comes from assemble_chunks_task checkpoint — file is already local
         if stage in ('start', 'downloading', 'assembled'):
-            if not os.path.exists(video_file_path) or stage in ('start', 'assembled'):
+            # Case A: Assembled file from chunk assembly already exists locally — skip download
+            if stage == 'assembled' and os.path.exists(video_file_path):
+                logger.info(f"Using locally assembled video file for {video_id}: {video_file_path}")
+                send_video_progress(video_id, "converting", 10, "Using assembled video, starting conversion...",
+                                   checkpoint={'stage': 'converting'})
+            # Case B: File doesn't exist locally — must download from R2
+            elif not os.path.exists(video_file_path) or stage == 'start':
                 send_video_progress(video_id, "downloading", 0, "Starting HLS conversion...",
                                    checkpoint={'stage': 'downloading'})
                 logger.info(f"Starting HLS conversion for video {video_id}: {video.title}")
@@ -581,6 +587,7 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
                                 break
                             dest.write(chunk)
                 logger.info(f"Video downloaded to: {video_file_path}")
+            # Case C: File already downloaded (resume)
             else:
                 logger.info(f"Resuming: video already downloaded for {video_id}")
             
