@@ -37,7 +37,7 @@ class NotificationTypes:
 # Maximum concurrent video processing tasks (assembly + conversion combined).
 # Prevents all workers from being occupied by large videos simultaneously,
 # which would exhaust DB and Redis connection pools for other requests.
-MAX_CONCURRENT_VIDEO_PROCESSING = 2
+MAX_CONCURRENT_VIDEO_PROCESSING = 3  # Matches --concurrency=3, ~6GB total (3x2GB)
 VIDEO_PROCESSING_SEMAPHORE_KEY = "video_processing_semaphore"
 SEMAPHORE_TTL = 7200  # 2 hours — auto-expires if counter gets stuck (worker crash without release)
 
