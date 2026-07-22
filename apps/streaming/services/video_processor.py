@@ -709,18 +709,24 @@ class VideoProcessor:
             playlist_path = os.path.join(variant_dir, playlist_filename)
             segment_pattern = os.path.join(variant_dir, f"{variant_name}_%03d.ts")
             
-            # Check if variant already exists (resume scenario)
+            # Check if variant already fully completed (resume scenario)
             if os.path.exists(playlist_path):
-                logger.info(f"Variant {variant_name} already exists, skipping")
-                self._update_variant_progress(variant_name, 100, f"{variant_name} complete", 'completed')
-                relative_playlist = os.path.join(variant_name, playlist_filename)
-                return {
-                    'name': variant_name,
-                    'resolution': preset['resolution'],
-                    'bandwidth': self._calculate_bandwidth(preset),
-                    'playlist': relative_playlist,
-                    'playlist_path': playlist_path
-                }
+                with open(playlist_path, 'r') as f:
+                    content = f.read()
+                if '#EXT-X-ENDLIST' in content:
+                    logger.info(f"Variant {variant_name} already completed (ENDLIST verified), skipping")
+                    self._update_variant_progress(variant_name, 100, f"{variant_name} complete", 'completed')
+                    relative_playlist = os.path.join(variant_name, playlist_filename)
+                    return {
+                        'name': variant_name,
+                        'resolution': preset['resolution'],
+                        'bandwidth': self._calculate_bandwidth(preset),
+                        'playlist': relative_playlist,
+                        'playlist_path': playlist_path
+                    }
+                else:
+                    # Variant exists but incomplete — re-process
+                    logger.warning(f"Variant {variant_name} playlist exists but incomplete (no ENDLIST), re-processing")
             
             # Build FFmpeg command with optional hardware acceleration
             cmd = self._build_ffmpeg_command(preset, segment_pattern, playlist_path)
@@ -753,7 +759,7 @@ class VideoProcessor:
 
             try:
                 # Monitor progress (reads stdout until EOF)
-                self._monitor_ffmpeg_progress(process, variant_name, variant_idx, total_variants, video_duration)
+                self._monitor_ffmpeg_progress(process, variant_name, variant_idx, total_variants, video_duration, dead)
 
                 # Wait for process to complete and capture stderr
                 _, stderr = process.communicate(timeout=900)  # 15 min grace after stdout closes
@@ -980,7 +986,8 @@ class VideoProcessor:
             return 0, 0
     
     def _monitor_ffmpeg_progress(self, process: subprocess.Popen, variant_name: str, 
-                                   variant_idx: int, total_variants: int, video_duration: float):
+                                   variant_idx: int, total_variants: int, video_duration: float,
+                                   dead_event: threading.Event = None):
         """
         Monitor FFmpeg progress and send updates via callback.
         Optimized to minimize blocking and ensure smooth progress updates.
@@ -997,6 +1004,10 @@ class VideoProcessor:
         try:
             # Use non-blocking iteration to prevent CPU stalls
             for line in process.stdout:
+                # Check if timeout killed the process
+                if dead_event and dead_event.is_set():
+                    logger.warning(f"Variant {variant_name} timeout detected in monitor loop")
+                    break
                 # Parse FFmpeg progress output
                 if 'out_time_ms=' in line:
                     match = re.search(r'out_time_ms=(\d+)', line)
