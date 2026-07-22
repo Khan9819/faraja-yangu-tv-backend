@@ -633,90 +633,98 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
             send_video_progress(video_id, "converting", 15, "Video downloaded, starting conversion...",
                                checkpoint={'stage': 'converting'})
         
-        # Stage 2: Convert to HLS (skip if already converted)
+        # STAGE 2+3: Convert to MP4 per quality (simple, fast, reliable)
+        # Replaces complex HLS with single MP4 per quality like BingwaFlix.
         if stage in ('start', 'downloading', 'converting', 'assembled'):
-            # Check if HLS files already exist locally
-            master_playlist_local = os.path.join(local_hls_dir, 'master.m3u8')
-            if not os.path.exists(master_playlist_local):
-                # Variant progress callback for consolidated updates with per-variant progress
-                def variant_progress_callback(overall_progress: int, message: str, variants_progress: dict):
-                    send_video_progress(
-                        video_id, 
-                        "converting", 
-                        overall_progress, 
-                        message,
-                        checkpoint={
-                            'stage': 'converting',
-                            'completed_variants': completed_variants,
-                        },
-                        variants_progress=variants_progress
-                    )
-                    # Update completed variants list when variants finish
-                    for variant_name, vp in variants_progress.items():
-                        status = getattr(vp, 'status', vp.get('status') if isinstance(vp, dict) else 'pending')
-                        if status == 'completed' and variant_name not in completed_variants:
-                            completed_variants.append(variant_name)
-                            # Queue database update instead of blocking
-                            cv_snapshot = list(completed_variants)
-                            def update_checkpoint(cv=cv_snapshot):
-                                try:
-                                    v = Video.objects.get(id=video_id)
-                                    v.processing_checkpoint = {
-                                        'stage': 'converting',
-                                        'completed_variants': cv
-                                    }
-                                    v.save(update_fields=['processing_checkpoint'])
-                                except Exception as e:
-                                    logger.error(f"Failed to update checkpoint for video {video_id}: {e}")
-                            db_queue.submit(update_checkpoint)
-                
-                # Legacy callback for backward compatibility
-                def progress_callback(variant_name: str, progress: int, message: str):
-                    pass  # Handled by variant_progress_callback now
-                
-                # Get recommended parallel workers based on system resources
-                parallel_workers = VideoProcessor.get_recommended_parallel_workers()
-                
-                # Initialize video processor with new features
-                processor = VideoProcessor(
-                    input_path=video_file_path,
-                    output_dir=local_hls_dir,
-                    progress_callback=progress_callback,
-                    use_hardware_acceleration=True,
-                    parallel_variants=parallel_workers,
-                    variant_progress_callback=variant_progress_callback
-                )
-                
-                send_video_progress(video_id, "converting", 20, "Starting HLS conversion...",
-                                   checkpoint={'stage': 'converting', 'completed_variants': completed_variants})
-                
-                # Resume from last completed variant if retrying
-                resume_from = completed_variants[-1] if completed_variants else None
-                if resume_from:
-                    logger.info(f"Resuming conversion from variant: {resume_from}")
-                    send_video_progress(video_id, "converting", 20, f"Resuming from {resume_from}...",
-                                       checkpoint={'stage': 'converting', 'completed_variants': completed_variants})
-                
-                conversion_result = processor.convert_to_hls(resume_from_variant=resume_from)
-                
-                if not conversion_result['success']:
-                    raise Exception(conversion_result.get('error', 'Unknown conversion error'))
-
-                # Verify at least one variant playlist was created
-                if not any(
-                    os.path.isfile(os.path.join(root, f))
-                    for root, dirs, files in os.walk(local_hls_dir)
-                    for f in files
-                    if f.endswith('.m3u8') and not f.startswith('master')
-                ):
-                    raise Exception("HLS conversion produced no variant playlist files - possible ffmpeg failure")
-            else:
-                logger.info(f"Resuming: HLS files already exist locally for {video_id}")
-                # Get duration from existing files
-                conversion_result = {'success': True, 'duration': 0}  # Duration will be recalculated if needed
+            QUALITY_PRESETS = [
+                {'name': '1080p', 'height': 1080, 'bitrate': '2000k', 'audio_bitrate': '128k', 'scale': '1920:1080', 'bandwidth': 2000000},
+                {'name': '720p', 'height': 720, 'bitrate': '1200k', 'audio_bitrate': '96k', 'scale': '1280:720', 'bandwidth': 1200000},
+                {'name': '480p', 'height': 480, 'bitrate': '600k', 'audio_bitrate': '64k', 'scale': '854:480', 'bandwidth': 600000},
+                {'name': '360p', 'height': 360, 'bitrate': '400k', 'audio_bitrate': '64k', 'scale': '640:360', 'bandwidth': 400000},
+            ]
             
-            send_video_progress(video_id, "uploading", 70, "Conversion complete, uploading HLS files...",
-                               checkpoint={'stage': 'uploading'})
+            video_urls = {}
+            quality_count = len(QUALITY_PRESETS)
+            
+            # Probe video duration for accurate progress
+            try:
+                probe = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                                       '-of', 'default=noprint_wrappers=1:nokey=1', video_file_path],
+                                      capture_output=True, text=True, timeout=30)
+                if probe.returncode == 0 and probe.stdout.strip():
+                    video_duration = float(probe.stdout.strip())
+                    logger.info(f"Video duration: {video_duration}s")
+            except Exception:
+                video_duration = conversion_result.get('duration', 0) if conversion_result else 0
+            
+            for idx, q in enumerate(QUALITY_PRESETS):
+                variant_name = q['name']
+                base_pct = 15 + (idx * 80 // quality_count)
+                send_video_progress(video_id, "converting", base_pct,
+                                   f"Converting {variant_name}... ({idx+1}/{quality_count})",
+                                   checkpoint={'stage': 'converting'})
+                
+                out_path = os.path.join(temp_dir, f"video_{video_id}_{variant_name}.mp4")
+                
+                try:
+                    cmd = [
+                        'ffmpeg', '-i', video_file_path,
+                        '-vf', f'scale={q["scale"]}',
+                        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
+                        '-profile:v', 'baseline',
+                        '-c:a', 'aac', '-b:a', q['audio_bitrate'],
+                        '-threads', '3',
+                        '-movflags', '+faststart',
+                        '-y', out_path,
+                    ]
+                    
+                    logger.info(f"Converting {variant_name}: ultrafast, {q['scale']}, {q['bitrate']}")
+                    proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, text=True, bufsize=1)
+                    
+                    for line in proc.stderr:
+                        match = re.search(r'time=(\d+):(\d+):(\d+\.?\d*)', line)
+                        if match and video_duration > 0:
+                            secs = int(match.group(1))*3600 + int(match.group(2))*60 + float(match.group(3))
+                            pct = int((secs / video_duration) * 100)
+                            if pct % 10 == 0:
+                                send_video_progress(video_id, "converting", min(base_pct + pct // quality_count, 90),
+                                                  f"Converting {variant_name}: {pct}%",
+                                                  checkpoint={'stage': 'converting'})
+                    
+                    proc.wait()
+                    if proc.returncode != 0:
+                        raise Exception(f"ffmpeg exit {proc.returncode} for {variant_name}")
+                    
+                    logger.info(f"{variant_name} completed for video {video_id}")
+                    
+                    # Upload to R2
+                    remote_key = f"{hls_output_dir}/{variant_name}.mp4"
+                    with open(out_path, 'rb') as f:
+                        default_storage.save(remote_key, f)
+                    
+                    video_urls[variant_name] = remote_key
+                    try: os.remove(out_path)
+                    except: pass
+                    
+                except Exception as e:
+                    logger.error(f"{variant_name} failed for video {video_id}: {e}")
+                    raise
+            
+            # Generate and upload master.m3u8
+            master_lines = ['#EXTM3U', '#EXT-X-VERSION:3']
+            for q in QUALITY_PRESETS:
+                if q['name'] in video_urls:
+                    master_lines.append(f'#EXT-X-STREAM-INF:BANDWIDTH={q["bandwidth"]},RESOLUTION={q["scale"]}')
+                    master_lines.append(f'{q["name"]}.mp4')
+            
+            master_content = '\n'.join(master_lines) + '\n'
+            master_key = f"{hls_output_dir}/master.m3u8"
+            from io import BytesIO
+            default_storage.save(master_key, BytesIO(master_content.encode()))
+            logger.info(f"Master playlist uploaded for video {video_id}: {len(video_urls)} variants")
+            
+            send_video_progress(video_id, "uploading", 95, f"Converted {len(video_urls)} qualities",
+                               checkpoint={'stage': 'finalizing'})
         
          # Stage 3: Upload HLS files (skip if already uploaded)
         if stage in ('start', 'downloading', 'converting', 'uploading', 'assembled'):
