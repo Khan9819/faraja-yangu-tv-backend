@@ -39,7 +39,7 @@ celery -A farajayangu_be.celery worker \
   -Ofair \
   --prefetch-multiplier=1 \
   --max-tasks-per-child=2 \
-  --max-memory-per-child=2000000 \
+  --max-memory-per-child=3000000 \
   --time-limit=32400 \
   --soft-time-limit=28800 \
   -E \
