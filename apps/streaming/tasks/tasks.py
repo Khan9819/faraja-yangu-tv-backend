@@ -1355,13 +1355,14 @@ def assemble_chunks_task(self, video_id: int, filename: str):
         send_video_progress(video_id, "assembling", 100, "Assembly complete, starting HLS conversion...")
         
         try:
-            # Route through shared trigger (feature-flagged)
-            from apps.streaming.services.conversion_client import trigger_video_processing
-            trigger_video_processing(video, source_key=temp_assembled_path)
-            logger.info(f"Triggered video processing for video {video.id} with local path")
+            # Call conversion directly in same process — avoids container restart
+            # between assembly and conversion losing the /tmp assembled file.
+            logger.info(f"Starting HLS conversion directly for video {video.id}")
+            convert_video_to_hls(video.id, temp_assembled_path)
+            logger.info(f"HLS conversion completed for video {video.id}")
         except Exception as e:
-            logger.error(f"Could not queue video conversion task: {str(e)}", exc_info=True)
-            send_video_error(video_id, "Could not start HLS conversion", str(e))
+            logger.error(f"Conversion failed for video {video.id}: {str(e)}", exc_info=True)
+            send_video_error(video_id, "HLS conversion failed", str(e))
         
         return {
             'success': True,
