@@ -564,6 +564,19 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
                 logger.warning(f"Local video path provided but file does not exist: {local_video_path}. Will fall back to R2 download.")
             video_file_path = os.path.join(temp_dir, f"video_{video_id}_original.mp4")
         
+        # If local file is missing, try downloading assembled backup from R2
+        if not os.path.exists(video_file_path):
+            assembled_r2_key = checkpoint.get('assembled_r2_key') if checkpoint else None
+            if assembled_r2_key and default_storage.exists(assembled_r2_key):
+                logger.info(f"Downloading assembled file from R2: {assembled_r2_key}")
+                with default_storage.open(assembled_r2_key, 'rb') as src:
+                    with open(video_file_path, 'wb') as dst:
+                        while True:
+                            chunk = src.read(8 * 1024 * 1024)
+                            if not chunk: break
+                            dst.write(chunk)
+                logger.info(f"Downloaded assembled file from R2 to: {video_file_path}")
+        
         # Validate disk space before starting
         try:
             import shutil
@@ -1342,11 +1355,21 @@ def assemble_chunks_task(self, video_id: int, filename: str):
         def save_final_checkpoint():
             try:
                 v = Video.objects.get(id=video_id)
-                v.processing_checkpoint = {'stage': 'assembled', 'local_video_path': temp_assembled_path}
+                v.processing_checkpoint = {'stage': 'assembled', 'local_video_path': temp_assembled_path, 'assembled_r2_key': assembled_r2_key}
                 v.save(update_fields=['processing_checkpoint'])
             except Exception as e:
                 logger.error(f"Failed to save final checkpoint for video {video_id}: {e}")
         db_queue.submit(save_final_checkpoint)
+        
+        # Upload assembled file to R2 as backup (survives container restarts)
+        assembled_r2_key = f"videos/assembled/{video_id}.mp4"
+        try:
+            with open(temp_assembled_path, 'rb') as f:
+                default_storage.save(assembled_r2_key, f)
+            logger.info(f"Uploaded assembled file to R2: {assembled_r2_key}")
+        except Exception as e:
+            logger.warning(f"Could not upload assembled file to R2: {e}. Will rely on local file.")
+            assembled_r2_key = None
         
         # Wait for queue to process pending updates before continuing
         db_queue.stop(timeout=10)
