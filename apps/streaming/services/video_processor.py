@@ -505,7 +505,7 @@ class VideoProcessor:
         Returns:
             List of command arguments
         """
-        cmd = ['nice', '-n', '19', 'ionice', '-c', '2', '-n', '7', self.ffmpeg_path, '-y']
+        cmd = [self.ffmpeg_path, '-y']
         
         # Hardware acceleration input args
         if self.hw_accel:
@@ -812,7 +812,7 @@ class VideoProcessor:
         Returns:
             List of command arguments
         """
-        cmd = ['nice', '-n', '19', 'ionice', '-c', '2', '-n', '7', self.ffmpeg_path]
+        cmd = [self.ffmpeg_path]
         
         # Add hardware acceleration input args if available
         if self.hw_accel:
