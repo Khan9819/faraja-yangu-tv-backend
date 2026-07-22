@@ -15,18 +15,6 @@ echo "  - Video Worker: $VIDEO_WORKER_LOG (queue: video_processing)"
 echo "  - General Worker: $GENERAL_WORKER_LOG (queues: general, celery)"
 echo "  - Beat Scheduler: $BEAT_LOG"
 
-# --- Purge stale Celery state from Redis (zombie workers + stale tasks) ---
-if [ -n "$REDIS_HOST" ] && [ -n "$REDIS_PASSWORD" ]; then
-    echo "Purging stale Celery data from Redis..."
-    redis-cli -h "$REDIS_HOST" -a "$REDIS_PASSWORD" --no-auth-warning -n 0 \
-        --scan --pattern "celery*" 2>/dev/null | xargs -r redis-cli -h "$REDIS_HOST" -a "$REDIS_PASSWORD" --no-auth-warning -n 0 DEL 2>/dev/null
-    redis-cli -h "$REDIS_HOST" -a "$REDIS_PASSWORD" --no-auth-warning -n 0 \
-        --scan --pattern "unacked*" 2>/dev/null | xargs -r redis-cli -h "$REDIS_HOST" -a "$REDIS_PASSWORD" --no-auth-warning -n 0 DEL 2>/dev/null
-    redis-cli -h "$REDIS_HOST" -a "$REDIS_PASSWORD" --no-auth-warning -n 0 \
-        --scan --pattern "_kombu*" 2>/dev/null | xargs -r redis-cli -h "$REDIS_HOST" -a "$REDIS_PASSWORD" --no-auth-warning -n 0 DEL 2>/dev/null
-    echo "  Redis cleanup complete."
-fi
-
 # Video processing worker — dedicated pool for CPU-intensive tasks
 # Concurrency=3 with 2GB/child = 6GB RAM budget
 # prefetch=1 prevents task hoarding, Ofair ensures fair distribution
