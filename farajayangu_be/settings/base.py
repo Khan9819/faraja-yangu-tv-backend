@@ -371,6 +371,7 @@ HLS_ENCODER_PRESET = env('HLS_ENCODER_PRESET', default='superfast')
 HLS_FFMPEG_THREADS = env.int('HLS_FFMPEG_THREADS', default=4)  # 4 threads = leave 2 cores for system (6-core server)
 # Skip encoding variants higher than source resolution (saves CPU time)
 HLS_SKIP_UPSCALING = env.bool('HLS_SKIP_UPSCALING', default=True)
+FFMPEG_VARIANT_TIMEOUT = 5400  # 90 min per variant — enough for 46+ min videos at high quality
 # Quality variants to generate (comma-separated): 1080p,720p,480p,360p
 HLS_VARIANTS = env.list('HLS_VARIANTS', default=['1080p', '720p', '480p', '360p'])
 # Use single-pass encoding - DISABLED by default as FFmpeg doesn't support multiple HLS outputs cleanly

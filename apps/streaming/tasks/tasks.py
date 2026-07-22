@@ -1162,8 +1162,8 @@ def cleanup_local_files(video_file_path: str, hls_dir: str):
     max_retries=3,
     acks_late=True,
     reject_on_worker_lost=True,
-    soft_time_limit=7200,
-    time_limit=9000,
+    soft_time_limit=28800,  # 8 hours — assembly + direct conversion for 46+ min videos
+    time_limit=32400,   # 9 hours
 )
 def assemble_chunks_task(self, video_id: int, filename: str):
     """
