@@ -426,7 +426,6 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {
 CELERY_TASK_ACKS_LATE = True  # Acknowledge after task completes, not when received
 CELERY_TASK_REJECT_ON_WORKER_LOST = True  # Re-queue task if worker dies
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1  # Only fetch 1 task at a time for long tasks
-CELERY_WORKER_MAX_MEMORY_PER_CHILD = 2_500_000_000  # 2.5GB — restart child before OOM kills whole worker
 
 # Result backend settings
 CELERY_RESULT_EXPIRES = 86400  # Results expire after 24 hours
