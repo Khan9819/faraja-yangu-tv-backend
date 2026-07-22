@@ -6,57 +6,69 @@ export TZ=Africa/Dar_es_Salaam
 # Create logs directory if it doesn't exist
 mkdir -p logs
 
-# Set log file paths
 VIDEO_WORKER_LOG="logs/celery_video_worker.log"
 GENERAL_WORKER_LOG="logs/celery_general_worker.log"
 BEAT_LOG="logs/celery_beat.log"
 
 echo "Starting Celery workers and beat scheduler..."
-echo "Log files:"
-echo "  - Video Worker: $VIDEO_WORKER_LOG"
-echo "  - General Worker: $GENERAL_WORKER_LOG"
+echo "  - Video Worker: $VIDEO_WORKER_LOG (queue: video_processing)"
+echo "  - General Worker: $GENERAL_WORKER_LOG (queues: general, celery)"
 echo "  - Beat Scheduler: $BEAT_LOG"
 
-# Start Celery worker for video processing (dedicated queue)
-# Uses prefork pool for CPU-intensive video processing tasks (FFmpeg, assembly)
-# Limited concurrency to prevent resource exhaustion
-# max-tasks-per-child=5 recycles workers to prevent memory leaks
+# --- Purge stale Celery state from Redis (zombie workers + stale tasks) ---
+if [ -n "$REDIS_HOST" ] && [ -n "$REDIS_PASSWORD" ]; then
+    echo "Purging stale Celery data from Redis..."
+    redis-cli -h "$REDIS_HOST" -a "$REDIS_PASSWORD" --no-auth-warning -n 0 \
+        --scan --pattern "celery*" 2>/dev/null | xargs -r redis-cli -h "$REDIS_HOST" -a "$REDIS_PASSWORD" --no-auth-warning -n 0 DEL 2>/dev/null
+    redis-cli -h "$REDIS_HOST" -a "$REDIS_PASSWORD" --no-auth-warning -n 0 \
+        --scan --pattern "unacked*" 2>/dev/null | xargs -r redis-cli -h "$REDIS_HOST" -a "$REDIS_PASSWORD" --no-auth-warning -n 0 DEL 2>/dev/null
+    redis-cli -h "$REDIS_HOST" -a "$REDIS_PASSWORD" --no-auth-warning -n 0 \
+        --scan --pattern "_kombu*" 2>/dev/null | xargs -r redis-cli -h "$REDIS_HOST" -a "$REDIS_PASSWORD" --no-auth-warning -n 0 DEL 2>/dev/null
+    echo "  Redis cleanup complete."
+fi
+
+# Video processing worker — dedicated pool for CPU-intensive tasks
+# Concurrency=3 with 2GB/child = 6GB RAM budget
+# prefetch=1 prevents task hoarding, Ofair ensures fair distribution
+# max-tasks-per-child=2 recycles workers to prevent memory leaks
 celery -A farajayangu_be.celery worker \
   -Q video_processing \
   -n video_worker@%h \
-  -l info \
   --pool=prefork \
-  --concurrency=2 \
-  --max-tasks-per-child=5 \
+  --concurrency=3 \
+  -Ofair \
+  --prefetch-multiplier=1 \
+  --max-tasks-per-child=2 \
+  --max-memory-per-child=2000000 \
+  --time-limit=32400 \
+  --soft-time-limit=28800 \
   -E \
+  --loglevel=INFO \
   --logfile="$VIDEO_WORKER_LOG" &
 VIDEO_WORKER_PID=$!
 
-# Start Celery worker for general tasks (emails, notifications, cleanup, etc.)
-# Uses threads pool for I/O-bound tasks
-# Higher concurrency since threads are lightweight
-# Handles both 'general' and 'celery' (default) queues
+# General tasks worker — thread pool for I/O-bound tasks
 celery -A farajayangu_be.celery worker \
   -Q general,celery \
   -n general_worker@%h \
-  -l info \
   --pool=threads \
   --concurrency=4 \
   --max-tasks-per-child=50 \
   -E \
+  --loglevel=INFO \
   --logfile="$GENERAL_WORKER_LOG" &
 GENERAL_WORKER_PID=$!
 
-# Start Celery beat scheduler in background
+# Celery Beat scheduler
 celery -A farajayangu_be beat \
-  -l INFO \
   --scheduler django_celery_beat.schedulers:DatabaseScheduler \
+  --loglevel=INFO \
   --logfile="$BEAT_LOG" &
 BEAT_PID=$!
 
-echo "Video Processing Worker started with PID: $VIDEO_WORKER_PID (queue: video_processing, pool: prefork, concurrency: 2)"
-echo "General Tasks Worker started with PID: $GENERAL_WORKER_PID (queues: general,celery, pool: threads, concurrency: 4)"
-echo "Celery Beat started with PID: $BEAT_PID"
+echo "Video Worker PID: $VIDEO_WORKER_PID (prefork, concurrency=3, 2GB/child, 8hr limit)"
+echo "General Worker PID: $GENERAL_WORKER_PID (threads, concurrency=4)"
+echo "Beat Scheduler PID: $BEAT_PID"
 
 # Wait for all processes (keeps container running)
 wait $VIDEO_WORKER_PID $GENERAL_WORKER_PID $BEAT_PID
