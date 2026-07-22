@@ -37,8 +37,28 @@ gunicorn -c .config/gunicorn_config.py farajayangu_be.asgi \
 GUNICORN_PID=$!
 echo "Gunicorn started with PID: $GUNICORN_PID"
 
-# Celery workers run on farajayangu-background-tasks-backend service only
-echo "Celery workers handled by background-tasks-backend service"
+# Celery workers (temporary — will move to background-tasks-backend once stable)
+CELERY_WORKER_LOG="logs/celery_video_worker.log"
+CELERY_GENERAL_LOG="logs/celery_general_worker.log"
+CELERY_BEAT_LOG="logs/celery_beat.log"
+echo "Starting Celery workers..."
+
+celery -A farajayangu_be.celery worker -Q video_processing \
+  -n video_worker@%h --pool=prefork --concurrency=1 \
+  --max-tasks-per-child=50 --loglevel=INFO > "$CELERY_WORKER_LOG" 2>&1 &
+CELERY_VIDEO_PID=$!
+
+celery -A farajayangu_be.celery worker -Q general,celery \
+  -n general_worker@%h --pool=threads --concurrency=4 \
+  --max-tasks-per-child=50 --loglevel=INFO > "$CELERY_GENERAL_LOG" 2>&1 &
+CELERY_GENERAL_PID=$!
+
+celery -A farajayangu_be beat \
+  --scheduler django_celery_beat.schedulers:DatabaseScheduler \
+  > "$CELERY_BEAT_LOG" 2>&1 &
+CELERY_BEAT_PID=$!
+
+echo "  Workers started: video=$CELERY_VIDEO_PID general=$CELERY_GENERAL_PID beat=$CELERY_BEAT_PID"
 
 # Wait for all processes (keeps container running)
 wait $NGINX_PID $GUNICORN_PID
