@@ -48,4 +48,11 @@ urlpatterns = [
     path('management/', include('apps.management.urls')),
     path('.well-known/assetlinks.json', assetlinks),
     path('video/<str:uid>/', video_og_page, name='video-og'),
+
+    path('api/authentication/', include('apps.authentication.urls')),
+    path('api/streaming/', include('apps.streaming.urls')),
+    path('api/advertising/', include('apps.advertising.urls')),
+    path('api/analytics/', include('apps.analytics.urls')),
+    path('api/profile/', include('apps.profile.urls')),
+    path('api/management/', include('apps.management.urls')),
 ]
