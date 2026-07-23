@@ -2,6 +2,7 @@
 Celery tasks for video processing and HLS conversion.
 """
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
