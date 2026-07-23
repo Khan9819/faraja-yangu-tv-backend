@@ -175,26 +175,36 @@ def _send_notification(fcm_token: str, title: str, body: str, data: dict = None)
     
 @celery_app.task(bind=True)
 def send_push_notification(self, target: UserGroupTypes, notification_type: NotificationTypes, title: str, message: str, metadata: dict = None):
-    """
-    Send push notifications to a group of users.
-    
-    Args:
-        target: User group to send notifications to (ALL, CLIENTS, ADMINS)
-        notification_type: Type of notification (NEW_VIDEO, COMMENT_REPLY)
-        title: Notification title
-        message: Notification body (supports --username-- placeholder)
-        metadata: Optional dict with extra data. For videos, include 'video_id' key.
-    """
+    """Send push notifications with DB atomic dedup (SELECT FOR UPDATE)."""
     close_old_connections()
+    from django.db import transaction
+    
+    video_uid = metadata.get('video_id') if metadata else None
+    video_id = metadata.get('db_video_id') if metadata else None
+    
+    # Atomic DB idempotency — one notification per video
+    if video_id:
+        try:
+            with transaction.atomic():
+                v = Video.objects.select_for_update().only('notification_sent').get(id=video_id)
+                if v.notification_sent:
+                    logger.info(f"Video {video_id} notification already sent, skipping")
+                    return
+                Video.objects.filter(id=video_id).update(notification_sent=True)
+        except Video.DoesNotExist:
+            pass
+        except Exception as e:
+            logger.error(f"DB idempotency failed for {video_id}: {e}")
+    
+    if not title:
+        if notification_type == NotificationTypes.NEW_VIDEO:
+            title = "New Video Uploaded"
+        elif notification_type == NotificationTypes.COMMENT_REPLY:
+            title = "You have a new comment reply"
     
     get_users = _get_users(target)
     sent_count = 0
     failed_count = 0
-    
-    # Extract video_id from metadata if present
-    video_uid = metadata.get('video_id') if metadata else None
-    
-    if not title:
         if notification_type == NotificationTypes.NEW_VIDEO:
             title = "New Video Uploaded"
         elif notification_type == NotificationTypes.COMMENT_REPLY:
