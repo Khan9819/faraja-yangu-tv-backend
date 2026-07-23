@@ -655,6 +655,7 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
                                       capture_output=True, text=True, timeout=30)
                 if probe.returncode == 0 and probe.stdout.strip():
                     video_duration = float(probe.stdout.strip())
+                    conversion_result = {'duration': video_duration}  # Set conversion_result for DB save
                     logger.info(f"Video duration: {video_duration}s")
             except Exception:
                 video_duration = conversion_result.get('duration', 0) if conversion_result else 0
