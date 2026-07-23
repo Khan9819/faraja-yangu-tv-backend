@@ -348,6 +348,8 @@ class VideoProcessor:
                         'playlist': os.path.join(variant_name, f"{variant_name}.m3u8"),
                         'playlist_path': playlist_path
                     })
+                    if skip_until_resume and variant_name == resume_from_variant:
+                        skip_until_resume = False
                     continue
                 
                 # Handle resume logic
