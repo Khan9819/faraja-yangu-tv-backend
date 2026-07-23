@@ -1023,7 +1023,8 @@ def cleanup_local_files(video_file_path: str, hls_dir: str):
         hls_dir: Path to HLS output directory
     """
     try:
-        import tempfile
+    import tempfile
+    import shutil
         temp_dir = tempfile.gettempdir()
         
         # Remove original video if it's a temp file
@@ -1072,7 +1073,6 @@ def assemble_chunks_task(self, video_id: int, filename: str):
         Dictionary with assembly results including local_video_path
     """
     import tempfile
-    import shutil
     from django.core.cache import cache
 
     close_old_connections()
