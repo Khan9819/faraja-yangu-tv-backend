@@ -2,9 +2,6 @@
 Celery tasks for video processing and HLS conversion.
 """
 import os
-import re
-import subprocess
-import time
 from pathlib import Path
 import logging
 from datetime import timedelta, datetime, timezone
@@ -33,86 +30,7 @@ class UserGroupTypes:
 
 class NotificationTypes:
     NEW_VIDEO = "new_video"
-    COMMENT_REPLY = "comment_reply"
-
-
-# Maximum concurrent video processing tasks (assembly + conversion combined).
-# Prevents all workers from being occupied by large videos simultaneously,
-# which would exhaust DB and Redis connection pools for other requests.
-MAX_CONCURRENT_VIDEO_PROCESSING = 3  # Matches --concurrency=3, ~6GB total (3x2GB)
-VIDEO_PROCESSING_SEMAPHORE_KEY = "video_processing_semaphore"
-SEMAPHORE_TTL = 7200  # 2 hours — auto-expires if counter gets stuck (worker crash without release)
-
-
-def _acquire_processing_slot(video_id: int, task_id: str) -> bool:
-    """Try to acquire a slot in the video processing semaphore.
-    
-    Uses Redis to track how many video processing tasks are currently running.
-    Returns True if a slot was acquired, False if the limit is reached.
-    """
-    from django.core.cache import cache
-    try:
-        # Get current count of active processing tasks
-        active = cache.get(VIDEO_PROCESSING_SEMAPHORE_KEY, 0)
-        if active >= MAX_CONCURRENT_VIDEO_PROCESSING:
-            logger.warning(
-                f"Video processing slot limit reached ({active}/{MAX_CONCURRENT_VIDEO_PROCESSING}), "
-                f"cannot start task {task_id} for video {video_id}"
-            )
-            return False
-        # Try to atomically increment
-        new_count = cache.incr(VIDEO_PROCESSING_SEMAPHORE_KEY)
-        if new_count is None:
-            # Key expired or doesn't exist — set initial value
-            cache.set(VIDEO_PROCESSING_SEMAPHORE_KEY, 1, timeout=SEMAPHORE_TTL)
-            new_count = 1
-        elif new_count > MAX_CONCURRENT_VIDEO_PROCESSING:
-            # Overshot — decrement back and fail
-            cache.decr(VIDEO_PROCESSING_SEMAPHORE_KEY)
-            logger.warning(
-                f"Video processing slot race condition: count={new_count}, "
-                f"cannot start task {task_id} for video {video_id}"
-            )
-            return False
-        else:
-            # Refresh TTL so key doesn't expire mid-processing
-            try:
-                cache.touch(VIDEO_PROCESSING_SEMAPHORE_KEY, SEMAPHORE_TTL)
-            except Exception:
-                pass
-        logger.info(f"Acquired video processing slot ({new_count}/{MAX_CONCURRENT_VIDEO_PROCESSING}) for task {task_id}")
-        return True
-    except ValueError:
-        # Key doesn't exist yet — set initial value
-        try:
-            cache.set(VIDEO_PROCESSING_SEMAPHORE_KEY, 1, timeout=SEMAPHORE_TTL)
-            return True
-        except Exception:
-            return False
-    except Exception as e:
-        logger.error(f"Error acquiring processing slot: {e}")
-        return True  # Allow on error to avoid blocking
-
-
-def _release_processing_slot(task_id: str) -> None:
-    """Release a slot in the video processing semaphore."""
-    from django.core.cache import cache
-    try:
-        current = cache.get(VIDEO_PROCESSING_SEMAPHORE_KEY, 0)
-        if current > 0:
-            new_count = cache.decr(VIDEO_PROCESSING_SEMAPHORE_KEY)
-            if new_count is not None and new_count <= 0:
-                # Counter at zero — delete key to prevent stale counters
-                cache.delete(VIDEO_PROCESSING_SEMAPHORE_KEY)
-            else:
-                # Refresh TTL so active slots don't expire
-                try:
-                    cache.touch(VIDEO_PROCESSING_SEMAPHORE_KEY, SEMAPHORE_TTL)
-                except Exception:
-                    pass
-            logger.info(f"Released video processing slot ({max(new_count or 0, 0)}/{MAX_CONCURRENT_VIDEO_PROCESSING}) for task {task_id}")
-    except Exception as e:
-        logger.error(f"Error releasing processing slot: {e}")    
+    COMMENT_REPLY = "comment_reply"    
 
 
 class DatabaseUpdateQueue:
@@ -172,7 +90,6 @@ class DatabaseUpdateQueue:
                 except Exception as e:
                     logger.error(f"Error processing database update: {e}", exc_info=True)
                 finally:
-                    close_old_connections()
                     self._queue.task_done()
             except queue.Empty:
                 continue
@@ -200,30 +117,6 @@ def _get_users(target: UserGroupTypes):
         return User.objects.filter(roles__name=Role.ROLES.ADMIN)
     else:
         return User.objects.none()
-
-def _normalize_media_url(url: str) -> str:
-    """Convert R2 or relative URLs to the public CMS proxy URL."""
-    if not url:
-        return ''
-    # If already using the CMS domain, return as-is
-    if 'cms.farajayangutv.co.tz' in url:
-        return url
-    # If it's a full R2 URL, extract the path and prefix with CMS
-    if 'r2.cloudflarestorage.com' in url:
-        import re
-        match = re.search(r'/farajayangu-tv/(.+)$', url)
-        if match:
-            return f'https://cms.farajayangutv.co.tz/media/{match.group(1)}'
-    # If absolute URL from another domain, try to extract path
-    if url.startswith('http') and '/media/' in url:
-        import re
-        match = re.search(r'/media/(.+)$', url)
-        if match:
-            return f'https://cms.farajayangutv.co.tz/media/{match.group(1)}'
-    # If relative path, prefix with CMS media URL
-    if not url.startswith('http'):
-        return f'https://cms.farajayangutv.co.tz/media/{url.lstrip("/")}'
-    return url
 
 def _send_notification(fcm_token: str, title: str, body: str, data: dict = None):
     """
@@ -256,80 +149,27 @@ def _send_notification(fcm_token: str, title: str, body: str, data: dict = None)
     
     # FCM requires all data values to be strings
     string_data = {k: str(v) for k, v in (data or {}).items()}
-    # Flutter handlers look for 'title' and 'body' in data payload (for foreground rendering)
-    string_data.setdefault('title', title)
-    string_data.setdefault('body', body)
     
-    # Generate a fresh signed URL for the thumbnail (R2 files are private)
-    normalized_thumbnail = ''
-    raw_thumbnail = data.get('video_thumbnail', '') if data else ''
-    if raw_thumbnail and raw_thumbnail != 'None' and raw_thumbnail != '':
-        try:
-            import boto3
-            s3 = boto3.client(
-                's3',
-                endpoint_url=settings.AWS_S3_ENDPOINT_URL,
-                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-                region_name=getattr(settings, 'AWS_S3_REGION_NAME', 'auto'),
-            )
-            normalized_thumbnail = s3.generate_presigned_url(
-                'get_object',
-                Params={'Bucket': settings.AWS_STORAGE_BUCKET_NAME, 'Key': raw_thumbnail},
-                ExpiresIn=604800,  # 7 days
-            )
-            string_data['video_thumbnail'] = normalized_thumbnail
-            logger.info(f"Generated signed thumbnail URL valid for 7 days")
-        except Exception as e:
-            logger.warning(f"Failed to generate signed thumbnail URL: {e}")
-    
-    android_config = messaging.AndroidConfig(
-        priority='high',
-        notification=messaging.AndroidNotification(
-            title=title,
-            body=body,
-            sound='faraja_notification',
-            channel_id='video_upload_channel',
-            color='#E7792A',
-            image=normalized_thumbnail or None,
-        ),
-    )
-    
-    apns_config = messaging.APNSConfig(
-        payload=messaging.APNSPayload(
-            aps=messaging.Aps(
-                alert=messaging.ApsAlert(title=title, body=body),
-                sound='default',
-                mutable_content=True,
-                content_available=True,
-            ),
-        ),
-    )
+    # Data-only message: no 'notification' block so the frontend has full
+    # control over display and tap handling on both Android and iOS.
+    string_data['title'] = title
+    string_data['body'] = body
     
     message = messaging.Message(
-        notification=messaging.Notification(
-            title=title,
-            body=body,
-            image=normalized_thumbnail or None,
-        ),
         data=string_data,
         token=fcm_token,
-        android=android_config,
-        apns=apns_config,
     )
     
     try:
         response = messaging.send(message)
         logger.info(f"Successfully sent notification: {response}")
         return response
+    except messaging.UnregisteredError:
+        logger.warning("FCM token is unregistered")
+    except messaging.InvalidArgumentError as e:
+        logger.error(f"Invalid argument: {e}")
     except Exception as e:
-        cls_name = type(e).__name__
-        if 'Unregistered' in cls_name or 'NotFound' in cls_name:
-            logger.warning(f"FCM token is unregistered: {e}")
-        elif 'Invalid' in cls_name:
-            logger.error(f"Invalid FCM argument: {e}")
-        else:
-            logger.error(f"Failed to send notification: {cls_name}: {e}")
+        logger.error(f"Failed to send notification: {e}")
         return None
 
     
@@ -338,13 +178,6 @@ def send_push_notification(self, target: UserGroupTypes, notification_type: Noti
     """
     Send push notifications to a group of users + record persistent history.
     Uses DB-level atomic idempotency (SELECT FOR UPDATE) to prevent duplicates.
-    
-    Args:
-        target: User group to send notifications to (ALL, CLIENTS, ADMINS)
-        notification_type: Type of notification (NEW_VIDEO, COMMENT_REPLY)
-        title: Notification title
-        message: Notification body (supports --username-- placeholder)
-        metadata: Optional dict with extra data. For videos, include 'video_id' key.
     """
     close_old_connections()
     from django.db import transaction
@@ -352,32 +185,20 @@ def send_push_notification(self, target: UserGroupTypes, notification_type: Noti
     video_uid = metadata.get('video_id') if metadata else None
     video_id = metadata.get('db_video_id') if metadata else None
     
-    # Atomic DB-level idempotency: SELECT FOR UPDATE prevents race conditions
-    # where multiple tasks try to send for the same video simultaneously.
+    # Atomic DB-level idempotency
     if video_id:
         try:
             from apps.streaming.models import Video
             with transaction.atomic():
                 v = Video.objects.select_for_update().only('notification_sent').get(id=video_id)
                 if v.notification_sent:
-                    logger.info(f"Video {video_id} notification already sent (DB), skipping")
+                    logger.info(f"Video {video_id} notification already sent, skipping")
                     return
-                # Mark as sent BEFORE sending — any concurrent task will see this
                 Video.objects.filter(id=video_id).update(notification_sent=True)
         except Video.DoesNotExist:
             pass
         except Exception as e:
             logger.error(f"DB idempotency check failed for video {video_id}: {e}")
-            # Fallback to Redis lock if DB check fails
-            from django.core.cache import cache
-            notif_lock_key = f"push_notif_lock:{video_id}"
-            acquired = cache.add(notif_lock_key, self.request.id, timeout=600)
-            if not acquired:
-                existing = cache.get(notif_lock_key)
-                if existing and existing != self.request.id:
-                    logger.info(f"Push notification for video {video_id} already sent (Redis), skipping")
-                    return
-    
     if not title:
         if notification_type == NotificationTypes.NEW_VIDEO:
             title = "New Video Uploaded"
@@ -387,45 +208,44 @@ def send_push_notification(self, target: UserGroupTypes, notification_type: Noti
     get_users = _get_users(target)
     sent_count = 0
     failed_count = 0
+        if notification_type == NotificationTypes.NEW_VIDEO:
+            title = "New Video Uploaded"
+        elif notification_type == NotificationTypes.COMMENT_REPLY:
+            title = "You have a new comment reply"
     
-    # Get thumbnail URL for history recording
-    thumbnail_url = metadata.get('video_thumbnail', '') if metadata else ''
+    print("Notification sent to: ", get_users)
     
-    # Record notifications for ALL users (history) — separate from FCM push
-    if notification_type == NotificationTypes.NEW_VIDEO:
-        thumbnail_for_history = metadata.get('thumbnail_url', '') if metadata else ''
-        try:
-            notification_records = [
-                Notification(
-                    user=user,
-                    title=title,
-                    message=message.replace('--username--', user.username),
-                    type=Notification.NOTIFICATION_TYPES.VIDEO,
-                    is_read=False,
-                    thumbnail_url=thumbnail_for_history,
-                    target_video_slug=video_uid,
-                    target_url=f'/Player/{video_uid}' if video_uid else None,
-                )
-                for user in get_users
-            ]
-            Notification.objects.bulk_create(notification_records, batch_size=500)
-            logger.info(f"Recorded {len(notification_records)} notification history rows for video {video_id}")
-        except Exception as e:
-            logger.error(f"Failed to record notification history: {e}")
-    
-    # FCM push to active devices (real-time)
     for user in get_users:
         devices: list[Devices] = user.devices.filter(is_active=True)
         user_message = message.replace("--username--", user.username)
+        print(user_message)
         for device in devices:
+            print(device.fcm_token)
             if device.fcm_token:
                 result = _send_notification(device.fcm_token, title, user_message, data=metadata)
                 if result:
                     sent_count += 1
                 else:
                     failed_count += 1
+                logger.debug(f"Push notification sent: {user.username} | {device.fcm_token}")
+        
+        # Create in-app notification record
+        notification_kwargs = {
+            'user': user,
+            'title': title,
+            'message': user_message,
+            'type': Notification.NOTIFICATION_TYPES.VIDEO if notification_type == NotificationTypes.NEW_VIDEO else Notification.NOTIFICATION_TYPES.PROMO,
+            'is_read': False,
+        }
+        
+        # Only set video-related fields if video_uid is available
+        if video_uid:
+            notification_kwargs['target_video_slug'] = str(video_uid)
+            notification_kwargs['target_url'] = f'/Player/{video_uid}'
+        
+        user.notifications.create(**notification_kwargs)
     
-    logger.info(f"Push notifications: {sent_count} sent, {failed_count} failed")
+    logger.info(f"Push notifications sent: {sent_count}, failed: {failed_count}")
 
 @celery_app.task(bind=True, max_retries=2, retry_backoff=30)
 def notify_user_of_reply(self, commenter_user_id: int, replier_name: str, comment_text: str, video_uid: str, video_title: str):
@@ -473,7 +293,7 @@ def notify_user_of_reply(self, commenter_user_id: int, replier_name: str, commen
     autoretry_for=(Exception,),
     retry_backoff=60,
     retry_backoff_max=600,
-    max_retries=2,  # Allow retry on failures (e.g. HLS upload timeout)
+    max_retries=0,  # Reduced from 3 to prevent too many duplicate processes
     acks_late=True,
     reject_on_worker_lost=True,
     soft_time_limit=14400,
@@ -496,28 +316,13 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
     from django.core.cache import cache
     close_old_connections()
     
-    # Acquire semaphore slot to limit concurrent video processing.
-    # Poll with sleep instead of self.retry() to avoid consuming Celery max_retries.
-    acquired_slot = _acquire_processing_slot(video_id, self.request.id)
-    if not acquired_slot:
-        logger.info(f"Video {video_id}: waiting for processing slot (max 30 min)...")
-        for _ in range(180):  # 180 iterations * 10s = 30 min max wait
-            time.sleep(10)
-            acquired_slot = _acquire_processing_slot(video_id, self.request.id)
-            if acquired_slot:
-                break
-        if not acquired_slot:
-            logger.error(f"Video {video_id}: could not acquire processing slot after 30 min wait")
-            return {'success': False, 'error': 'All video processing slots busy, try again later'}
-    
     # Initialize database update queue for async writes
     db_queue = DatabaseUpdateQueue()
     db_queue.start()
     
     # Acquire a lock to prevent duplicate task execution for the same video
-    # Lock TTL = soft_time_limit (14400s) + 1 hour buffer = 18000s
     lock_key = f"video_conversion_lock_{video_id}"
-    lock_acquired = cache.add(lock_key, self.request.id, timeout=18000)
+    lock_acquired = cache.add(lock_key, self.request.id, timeout=18000)  # 5 hour timeout
     
     if not lock_acquired:
         # Check if the existing lock is from a different task
@@ -562,22 +367,7 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
                                checkpoint={'stage': 'converting'})
             stage = 'converting'  # Skip download stage
         else:
-            if local_video_path:
-                logger.warning(f"Local video path provided but file does not exist: {local_video_path}. Will fall back to R2 download.")
             video_file_path = os.path.join(temp_dir, f"video_{video_id}_original.mp4")
-        
-        # If local file is missing, try downloading assembled backup from R2
-        if not os.path.exists(video_file_path):
-            assembled_r2_key = checkpoint.get('assembled_r2_key') if checkpoint else None
-            if assembled_r2_key and default_storage.exists(assembled_r2_key):
-                logger.info(f"Downloading assembled file from R2: {assembled_r2_key}")
-                with default_storage.open(assembled_r2_key, 'rb') as src:
-                    with open(video_file_path, 'wb') as dst:
-                        while True:
-                            chunk = src.read(8 * 1024 * 1024)
-                            if not chunk: break
-                            dst.write(chunk)
-                logger.info(f"Downloaded assembled file from R2 to: {video_file_path}")
         
         # Validate disk space before starting
         try:
@@ -597,16 +387,9 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
         except Exception as e:
             logger.warning(f"Could not validate disk space: {str(e)}")
         
-        # Stage 1: Download video from R2 (skip if local file already assembled or downloaded)
-        # 'assembled' stage comes from assemble_chunks_task checkpoint — file is already local
-        if stage in ('start', 'downloading', 'assembled'):
-            # Case A: Assembled file from chunk assembly already exists locally — skip download
-            if stage == 'assembled' and os.path.exists(video_file_path):
-                logger.info(f"Using locally assembled video file for {video_id}: {video_file_path}")
-                send_video_progress(video_id, "converting", 10, "Using assembled video, starting conversion...",
-                                   checkpoint={'stage': 'converting'})
-            # Case B: File doesn't exist locally — must download from R2
-            elif not os.path.exists(video_file_path) or stage == 'start':
+        # Stage 1: Download video from R2 (skip if local path provided or already downloaded)
+        if stage in ('start', 'downloading'):
+            if not os.path.exists(video_file_path) or stage == 'start':
                 send_video_progress(video_id, "downloading", 0, "Starting HLS conversion...",
                                    checkpoint={'stage': 'downloading'})
                 logger.info(f"Starting HLS conversion for video {video_id}: {video.title}")
@@ -628,123 +411,137 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
                                 break
                             dest.write(chunk)
                 logger.info(f"Video downloaded to: {video_file_path}")
-            # Case C: File already downloaded (resume)
             else:
                 logger.info(f"Resuming: video already downloaded for {video_id}")
             
             send_video_progress(video_id, "converting", 15, "Video downloaded, starting conversion...",
                                checkpoint={'stage': 'converting'})
         
-        # STAGE 2+3: Convert to MP4 per quality (simple, fast, reliable)
-        # Replaces complex HLS with single MP4 per quality like BingwaFlix.
-        if stage in ('start', 'downloading', 'converting', 'assembled'):
-            QUALITY_PRESETS = [
-                {'name': '1080p', 'height': 1080, 'bitrate': '2000k', 'audio_bitrate': '128k', 'scale': '1920:1080', 'bandwidth': 2000000},
-                {'name': '720p', 'height': 720, 'bitrate': '1200k', 'audio_bitrate': '96k', 'scale': '1280:720', 'bandwidth': 1200000},
-                {'name': '480p', 'height': 480, 'bitrate': '600k', 'audio_bitrate': '64k', 'scale': '854:480', 'bandwidth': 600000},
-                {'name': '360p', 'height': 360, 'bitrate': '400k', 'audio_bitrate': '64k', 'scale': '640:360', 'bandwidth': 400000},
-            ]
-            
-            video_urls = {}
-            quality_count = len(QUALITY_PRESETS)
-            
-            # Probe video duration for accurate progress
-            try:
-                probe = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-                                       '-of', 'default=noprint_wrappers=1:nokey=1', video_file_path],
-                                      capture_output=True, text=True, timeout=30)
-                if probe.returncode == 0 and probe.stdout.strip():
-                    video_duration = float(probe.stdout.strip())
-                    conversion_result = {'duration': video_duration}  # Set conversion_result for DB save
-                    logger.info(f"Video duration: {video_duration}s")
-            except Exception:
-                video_duration = conversion_result.get('duration', 0) if conversion_result else 0
-            
-            for idx, q in enumerate(QUALITY_PRESETS):
-                variant_name = q['name']
-                base_pct = 15 + (idx * 80 // quality_count)
-                send_video_progress(video_id, "converting", base_pct,
-                                   f"Converting {variant_name}... ({idx+1}/{quality_count})",
-                                   checkpoint={'stage': 'converting'})
+        # Stage 2: Convert to HLS (skip if already converted)
+        if stage in ('start', 'downloading', 'converting'):
+            # Check if HLS files already exist locally
+            master_playlist_local = os.path.join(local_hls_dir, 'master.m3u8')
+            if not os.path.exists(master_playlist_local):
+                # Variant progress callback for consolidated updates with per-variant progress
+                def variant_progress_callback(overall_progress: int, message: str, variants_progress: dict):
+                    send_video_progress(
+                        video_id, 
+                        "converting", 
+                        overall_progress, 
+                        message,
+                        checkpoint={
+                            'stage': 'converting',
+                            'completed_variants': completed_variants,
+                        },
+                        variants_progress=variants_progress
+                    )
+                    # Update completed variants list when variants finish
+                    for variant_name, vp in variants_progress.items():
+                        status = getattr(vp, 'status', vp.get('status') if isinstance(vp, dict) else 'pending')
+                        if status == 'completed' and variant_name not in completed_variants:
+                            completed_variants.append(variant_name)
+                            # Queue database update instead of blocking
+                            cv_snapshot = list(completed_variants)
+                            def update_checkpoint(cv=cv_snapshot):
+                                try:
+                                    v = Video.objects.get(id=video_id)
+                                    v.processing_checkpoint = {
+                                        'stage': 'converting',
+                                        'completed_variants': cv
+                                    }
+                                    v.save(update_fields=['processing_checkpoint'])
+                                except Exception as e:
+                                    logger.error(f"Failed to update checkpoint for video {video_id}: {e}")
+                            db_queue.submit(update_checkpoint)
                 
-                out_path = os.path.join(temp_dir, f"video_{video_id}_{variant_name}.mp4")
+                # Legacy callback for backward compatibility
+                def progress_callback(variant_name: str, progress: int, message: str):
+                    pass  # Handled by variant_progress_callback now
                 
-                try:
-                    cmd = [
-                        'ffmpeg', '-i', video_file_path,
-                        '-vf', f'scale={q["scale"]}',
-                        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
-                        '-profile:v', 'baseline',
-                        '-c:a', 'aac', '-b:a', q['audio_bitrate'],
-                        '-threads', '3',
-                        '-movflags', '+faststart',
-                        '-y', out_path,
-                    ]
-                    
-                    logger.info(f"Converting {variant_name}: ultrafast, {q['scale']}, {q['bitrate']}")
-                    proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, text=True, bufsize=1)
-                    
-                    stderr_lines = []
-                    for line in proc.stderr:
-                        stderr_lines.append(line)
-                        match = re.search(r'time=(\d+):(\d+):(\d+\.?\d*)', line)
-                        if match and video_duration > 0:
-                            secs = int(match.group(1))*3600 + int(match.group(2))*60 + float(match.group(3))
-                            pct = int((secs / video_duration) * 100)
-                            if pct % 10 == 0:
-                                send_video_progress(video_id, "converting", min(base_pct + pct // quality_count, 90),
-                                                  f"Converting {variant_name}: {pct}%",
-                                                  checkpoint={'stage': 'converting'})
-                    
-                    proc.wait()
-                    if proc.returncode != 0:
-                        stderr_tail = ''.join(stderr_lines[-20:])
-                        raise Exception(f"ffmpeg exit {proc.returncode} for {variant_name}: {stderr_tail[-500:]}")
-                    
-                    logger.info(f"{variant_name} completed for video {video_id}")
-                    
-                    # Upload to R2
-                    remote_key = f"{hls_output_dir}/{variant_name}.mp4"
-                    with open(out_path, 'rb') as f:
-                        default_storage.save(remote_key, f)
-                    
-                    video_urls[variant_name] = remote_key
-                    try: os.remove(out_path)
-                    except: pass
-                    
-                except Exception as e:
-                    logger.error(f"{variant_name} failed for video {video_id}: {e}")
-                    raise
+                # Get recommended parallel workers based on system resources
+                parallel_workers = VideoProcessor.get_recommended_parallel_workers()
+                
+                # Initialize video processor with new features
+                processor = VideoProcessor(
+                    input_path=video_file_path,
+                    output_dir=local_hls_dir,
+                    progress_callback=progress_callback,
+                    use_hardware_acceleration=True,
+                    parallel_variants=parallel_workers,
+                    variant_progress_callback=variant_progress_callback
+                )
+                
+                send_video_progress(video_id, "converting", 20, "Starting HLS conversion...",
+                                   checkpoint={'stage': 'converting', 'completed_variants': completed_variants})
+                
+                # Resume from last completed variant if retrying
+                resume_from = completed_variants[-1] if completed_variants else None
+                if resume_from:
+                    logger.info(f"Resuming conversion from variant: {resume_from}")
+                    send_video_progress(video_id, "converting", 20, f"Resuming from {resume_from}...",
+                                       checkpoint={'stage': 'converting', 'completed_variants': completed_variants})
+                
+                conversion_result = processor.convert_to_hls(resume_from_variant=resume_from)
+                
+                if not conversion_result['success']:
+                    raise Exception(conversion_result.get('error', 'Unknown conversion error'))
+            else:
+                logger.info(f"Resuming: HLS files already exist locally for {video_id}")
+                # Get duration from existing files
+                conversion_result = {'success': True, 'duration': 0}  # Duration will be recalculated if needed
             
-            # Generate and upload master.m3u8
-            master_lines = ['#EXTM3U', '#EXT-X-VERSION:3']
-            for q in QUALITY_PRESETS:
-                if q['name'] in video_urls:
-                    master_lines.append(f'#EXT-X-STREAM-INF:BANDWIDTH={q["bandwidth"]},RESOLUTION={q["scale"]}')
-                    master_lines.append(f'{q["name"]}.mp4')
-            
-            master_content = '\n'.join(master_lines) + '\n'
-            master_key = f"{hls_output_dir}/master.m3u8"
-            from io import BytesIO
-            default_storage.save(master_key, BytesIO(master_content.encode()))
-            logger.info(f"Master playlist uploaded for video {video_id}: {len(video_urls)} variants")
-            
-            send_video_progress(video_id, "uploading", 95, f"Converted {len(video_urls)} qualities",
-                               checkpoint={'stage': 'finalizing'})
+            send_video_progress(video_id, "uploading", 70, "Conversion complete, uploading HLS files...",
+                               checkpoint={'stage': 'uploading'})
         
-        # Verify master playlist is on R2
-        remote_master = f"{hls_output_dir}/master.m3u8"
-        if not default_storage.exists(remote_master):
-            raise Exception(f"Upload verification failed: {remote_master} not found on R2")
+        # Stage 3: Upload HLS files (skip if already uploaded)
+        if stage in ('start', 'downloading', 'converting', 'uploading'):
+            # Check if already uploaded by checking remote storage
+            try:
+                remote_master = f"{hls_output_dir}/master.m3u8"
+                if default_storage.exists(remote_master):
+                    logger.info(f"Resuming: HLS files already uploaded for {video_id}")
+                    uploaded_paths = []  # Already uploaded
+                    send_video_progress(video_id, "uploading", 90, "HLS files already uploaded",
+                                       checkpoint={'stage': 'finalizing'})
+                else:
+                    send_video_progress(video_id, "uploading", 75, "Uploading HLS files to storage...",
+                                       checkpoint={'stage': 'uploading'})
+                    try:
+                        uploaded_paths = upload_hls_files_to_storage(local_hls_dir, hls_output_dir)
+                        logger.info(f"Uploaded {len(uploaded_paths)} files to R2 storage")
+                        send_video_progress(video_id, "uploading", 90, f"Uploaded {len(uploaded_paths)} HLS files",
+                                           checkpoint={'stage': 'finalizing'})
+                    except Exception as upload_error:
+                        logger.error(f"HLS upload failed for video {video_id}: {upload_error}")
+                        send_video_error(video_id, "Failed to upload HLS files", str(upload_error))
+                        raise
+            except Exception as e:
+                # If it's an upload error from inside, re-raise it
+                if 'upload' in str(e).lower() or 'Failed to upload' in str(e):
+                    raise
+                # If storage check fails, try uploading anyway
+                logger.warning(f"Storage check failed, attempting upload: {e}")
+                send_video_progress(video_id, "uploading", 75, "Uploading HLS files to storage...",
+                                   checkpoint={'stage': 'uploading'})
+                try:
+                    uploaded_paths = upload_hls_files_to_storage(local_hls_dir, hls_output_dir)
+                    logger.info(f"Uploaded {len(uploaded_paths)} files to R2 storage")
+                    send_video_progress(video_id, "uploading", 90, f"Uploaded {len(uploaded_paths)} HLS files",
+                                       checkpoint={'stage': 'finalizing'})
+                except Exception as upload_error:
+                    logger.error(f"HLS upload failed for video {video_id}: {upload_error}")
+                    send_video_error(video_id, "Failed to upload HLS files", str(upload_error))
+                    raise
+        
+        # Stage 4: Finalize
+        send_video_progress(video_id, "uploading", 95, "Finalizing video processing...",
+                           checkpoint={'stage': 'finalizing'})
         
         # Update video object with HLS information
         video.hls_path = hls_output_dir
         video.hls_master_playlist = f"{hls_output_dir}/master.m3u8"
-        duration_seconds = conversion_result.get('duration') if conversion_result else None
-        if not duration_seconds:
-            duration_seconds = extract_duration_from_hls_playlist(local_hls_dir)
-        if duration_seconds is not None:
-            video.duration = timedelta(seconds=float(duration_seconds))
+        if conversion_result and conversion_result.get('duration'):
+            video.duration = timedelta(seconds=conversion_result['duration'])
         video.processing_status = 'completed'
         video.processing_error = None
         video.processing_checkpoint = None  # Clear checkpoint
@@ -789,26 +586,23 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
         category_name = getattr(video.category, 'name', 'Uncategorized') if video.category else 'Uncategorized'
         
         # Build enriched metadata for deep-link support
-        # Store the raw thumbnail S3 key — _send_notification will generate a signed URL at send-time
-        thumbnail_key = ''
+        thumbnail_url = ''
         if video.thumbnail:
             try:
-                thumbnail_key = video.thumbnail.name
+                thumbnail_url = video.thumbnail.url
             except Exception:
-                thumbnail_key = ''
+                thumbnail_url = ''
         
         notification_metadata = {
             'type': 'video_upload',
             'video_id': str(video.uid),
-            'db_video_id': video.id,
             'video_title': video.title or '',
-            'video_thumbnail': thumbnail_key,
+            'video_thumbnail': thumbnail_url,
             'video_category': category_name,
             'video_description': video.description or '',
             'video_duration': str(int(video.duration.total_seconds())) if video.duration else '0',
             'video_created_at': video.created_at.isoformat() if video.created_at else '',
-            'master_playlist': f"{getattr(settings, 'BASE_URL', 'http://127.0.0.1:8000')}/streaming/hls/{video.uid}/master.m3u8" if video.hls_master_playlist else '',
-            'thumbnail_url': video.thumbnail.url if video.thumbnail else '',
+            'master_playlist': f'/streaming/hls/{video.uid}/master.m3u8' if video.hls_master_playlist else '',
         }
         
         send_push_notification.delay(
@@ -886,15 +680,17 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
         except:
             pass
         
-        db_queue.stop(timeout=5)
+        raise
         
-        # Re-raise so Celery autoretry works (delay() calls) and
-        # direct callers (assemble_chunks_task) know conversion failed.
+        db_queue.stop(timeout=5)
+        # Release lock before retry so the retry can acquire it
+        cache.delete(lock_key)
+        
+        # Retry the task
         raise
     
     finally:
-        # Always release the semaphore slot, stop queue, and release the lock when task ends
-        _release_processing_slot(self.request.id)
+        # Always stop the queue and release the lock when task ends
         try:
             db_queue.stop(timeout=5)
         except:
@@ -905,64 +701,28 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
             pass 
 
 
-def extract_duration_from_hls_playlist(local_hls_dir: str) -> float | None:
-    """Fallback: extract total duration from HLS variant playlist EXTINF tags."""
-    try:
-        if not os.path.isdir(local_hls_dir):
-            logger.warning(f"HLS directory does not exist: {local_hls_dir}")
-            return None
-
-        playlist_path = None
-
-        for root, dirs, files in os.walk(local_hls_dir):
-            m3u8_files = sorted(f for f in files if f.endswith('.m3u8') and not f.startswith('master'))
-            if m3u8_files:
-                playlist_path = os.path.join(root, m3u8_files[0])
-                break
-
-        if not playlist_path:
-            logger.warning(f"No variant playlist found for duration extraction in {local_hls_dir}")
-            return None
-
-        total = 0.0
-        with open(playlist_path, encoding='utf-8', errors='replace') as f:
-            for line in f:
-                if line.startswith('#EXTINF:'):
-                    try:
-                        total += float(line.split(':')[1].split(',')[0])
-                    except (IndexError, ValueError):
-                        pass
-        if total > 0:
-            logger.info(f"Extracted duration {total:.1f}s from {os.path.basename(playlist_path)}")
-            return total
-        else:
-            logger.warning(f"Playlist {playlist_path} has no EXTINF tags (duration=0)")
-    except Exception as e:
-        logger.warning(f"Failed to extract duration from HLS playlist: {e}")
-    return None
-
-
-def upload_hls_files_to_storage(local_dir: str, remote_dir: str, max_workers: int = 4) -> list:
+def upload_hls_files_to_storage(local_dir: str, remote_dir: str, max_workers: int = 2) -> list:
     """
     Upload HLS files from local directory to remote storage.
     
-    Uses concurrent uploads with ThreadPoolExecutor for faster throughput.
+    Uses sequential uploads by default to avoid overwhelming R2 and causing hangs.
     Each upload has retry logic for resilience.
     
     Args:
         local_dir: Local directory containing HLS files
         remote_dir: Remote directory path in storage
-        max_workers: Number of parallel upload workers (default 4)
+        max_workers: Number of parallel upload workers (default 2, reduced for stability)
         
     Returns:
         List of uploaded file paths
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import time
     
     uploaded_files = []
     files_to_upload = []
     
     try:
+        # Collect all files to upload
         for root, dirs, files in os.walk(local_dir):
             for file in files:
                 local_file_path = os.path.join(root, file)
@@ -971,9 +731,12 @@ def upload_hls_files_to_storage(local_dir: str, remote_dir: str, max_workers: in
                 files_to_upload.append((local_file_path, remote_file_path))
         
         total_files = len(files_to_upload)
-        logger.info(f"Uploading {total_files} HLS files to R2 storage with {max_workers} workers...")
+        logger.info(f"Uploading {total_files} HLS files to R2 storage...")
         
         def upload_single_file_with_retry(local_path: str, remote_path: str, max_retries: int = 3) -> str:
+            """
+            Upload a single file with retry logic.
+            """
             last_error = None
             for attempt in range(max_retries):
                 try:
@@ -984,27 +747,22 @@ def upload_hls_files_to_storage(local_dir: str, remote_dir: str, max_workers: in
                     last_error = e
                     logger.warning(f"Upload attempt {attempt + 1}/{max_retries} failed for {remote_path}: {e}")
                     if attempt < max_retries - 1:
-                        time.sleep(2 ** attempt)
+                        time.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
             raise last_error
         
-        def upload_file(file_pair):
-            local_path, remote_path = file_pair
-            return upload_single_file_with_retry(local_path, remote_path)
-        
-        completed = 0
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(upload_file, pair): pair for pair in files_to_upload}
-            for future in as_completed(futures):
-                pair = futures[future]
-                try:
-                    uploaded_path = future.result()
-                    uploaded_files.append(uploaded_path)
-                    completed += 1
-                    if completed % 50 == 0 or completed == total_files:
-                        logger.info(f"Uploaded {completed}/{total_files} HLS files")
-                except Exception as e:
-                    logger.error(f"Failed to upload {pair[1]} after retries: {str(e)}")
-                    raise
+        # Sequential upload for stability (avoids R2 connection issues)
+        for i, (local_path, remote_path) in enumerate(files_to_upload):
+            try:
+                uploaded_path = upload_single_file_with_retry(local_path, remote_path)
+                uploaded_files.append(uploaded_path)
+                
+                # Log progress every 50 files or at the end
+                if (i + 1) % 50 == 0 or i == total_files - 1:
+                    logger.info(f"Uploaded {i + 1}/{total_files} HLS files")
+                    
+            except Exception as e:
+                logger.error(f"Failed to upload {remote_path} after retries: {str(e)}")
+                raise
         
         logger.info(f"Successfully uploaded {len(uploaded_files)} HLS files to storage")
         return uploaded_files
@@ -1053,8 +811,8 @@ def cleanup_local_files(video_file_path: str, hls_dir: str):
     max_retries=3,
     acks_late=True,
     reject_on_worker_lost=True,
-    soft_time_limit=28800,  # 8 hours — assembly + direct conversion for 46+ min videos
-    time_limit=32400,   # 9 hours
+    soft_time_limit=1800,
+    time_limit=2100,
 )
 def assemble_chunks_task(self, video_id: int, filename: str):
     """
@@ -1072,32 +830,9 @@ def assemble_chunks_task(self, video_id: int, filename: str):
         Dictionary with assembly results including local_video_path
     """
     import tempfile
-    from django.core.cache import cache
+    import shutil
 
     close_old_connections()
-    
-    # Acquire semaphore slot to limit concurrent video processing.
-    # Poll with sleep instead of self.retry() to avoid consuming Celery max_retries.
-    acquired_slot = _acquire_processing_slot(video_id, self.request.id)
-    if not acquired_slot:
-        logger.info(f"Video {video_id}: waiting for processing slot (max 30 min)...")
-        for _ in range(180):  # 180 iterations * 10s = 30 min max wait
-            time.sleep(10)
-            acquired_slot = _acquire_processing_slot(video_id, self.request.id)
-            if acquired_slot:
-                break
-        if not acquired_slot:
-            logger.error(f"Video {video_id}: could not acquire processing slot after 30 min wait")
-            return {'success': False, 'error': 'All video processing slots busy, try again later'}
-    
-    # Idempotency lock: prevent duplicate assembly tasks for the same video
-    lock_key = f"chunk_assembly_lock_{video_id}"
-    lock_acquired = cache.add(lock_key, self.request.id, timeout=10800)
-    if not lock_acquired:
-        existing_task_id = cache.get(lock_key)
-        if existing_task_id and existing_task_id != self.request.id:
-            logger.warning(f"Video {video_id} assembly already in progress (task {existing_task_id}), skipping")
-            return {'success': False, 'error': 'Assembly already in progress', 'duplicate': True}
     
     # Initialize database update queue for async writes
     db_queue = DatabaseUpdateQueue()
@@ -1196,11 +931,6 @@ def assemble_chunks_task(self, video_id: int, filename: str):
                             break
                         assembled_file.write(data)
                 
-                # Close stale DB connections periodically to prevent connection pool exhaustion
-                # during long-running assembly (especially for large videos)
-                if i % 20 == 0:
-                    close_old_connections()
-                
                 progress = int(10 + (i + 1) / total_chunks * 70)  # 10-80% for assembly
                 
                 # Save checkpoint every 50 chunks using queue
@@ -1223,30 +953,43 @@ def assemble_chunks_task(self, video_id: int, filename: str):
                 elif i == total_chunks - 1:
                     send_video_progress(video_id, "assembling", progress, f"Assembled chunk {i + 1}/{total_chunks}")
         
-        send_video_progress(video_id, "assembling", 85, "Assembly complete")
+        send_video_progress(video_id, "assembling", 85, "Cleaning up chunks from storage...")
         
-        # Chunks retained in R2 for streaming download support
-        # (previously deleted — now kept as downloadable MP4 source)
+        # Delete chunks from R2 in batches to avoid connection pool exhaustion
+        s3_client = default_storage.connection.meta.client
+        bucket_name = default_storage.bucket_name
+        CHUNK_BATCH = 1000
+        
+        for batch_start in range(0, total_chunks, CHUNK_BATCH):
+            batch = chunk_files[batch_start:batch_start + CHUNK_BATCH]
+            try:
+                s3_client.delete_objects(
+                    Bucket=bucket_name,
+                    Delete={'Objects': [{'Key': k} for k in batch]}
+                )
+            except Exception as e:
+                logger.warning(f"Batch delete failed for video {video_id}, falling back to individual: {e}")
+                for chunk_path in batch:
+                    try:
+                        default_storage.delete(chunk_path)
+                    except Exception as ie:
+                        logger.warning(f"Could not delete chunk {chunk_path}: {str(ie)}")
+        
+        try:
+            if hasattr(default_storage, 'delete'):
+                default_storage.delete(chunk_dir)
+        except Exception as e:
+            logger.warning(f"Could not delete chunk directory {chunk_dir}: {str(e)}")
         
         # Save checkpoint with local path - DO NOT upload to R2 (queue this update)
         def save_final_checkpoint():
             try:
                 v = Video.objects.get(id=video_id)
-                v.processing_checkpoint = {'stage': 'assembled', 'local_video_path': temp_assembled_path, 'assembled_r2_key': assembled_r2_key}
+                v.processing_checkpoint = {'stage': 'assembled', 'local_video_path': temp_assembled_path}
                 v.save(update_fields=['processing_checkpoint'])
             except Exception as e:
                 logger.error(f"Failed to save final checkpoint for video {video_id}: {e}")
         db_queue.submit(save_final_checkpoint)
-        
-        # Upload assembled file to R2 as backup (survives container restarts)
-        assembled_r2_key = f"videos/assembled/{video_id}.mp4"
-        try:
-            with open(temp_assembled_path, 'rb') as f:
-                default_storage.save(assembled_r2_key, f)
-            logger.info(f"Uploaded assembled file to R2: {assembled_r2_key}")
-        except Exception as e:
-            logger.warning(f"Could not upload assembled file to R2: {e}. Will rely on local file.")
-            assembled_r2_key = None
         
         # Wait for queue to process pending updates before continuing
         db_queue.stop(timeout=10)
@@ -1255,15 +998,13 @@ def assemble_chunks_task(self, video_id: int, filename: str):
         send_video_progress(video_id, "assembling", 100, "Assembly complete, starting HLS conversion...")
         
         try:
-            logger.info(f"Starting HLS conversion directly for video {video.id}")
-            result = convert_video_to_hls(video.id, temp_assembled_path)
-            if result and isinstance(result, dict) and not result.get('success', True):
-                raise Exception(result.get('error', 'Conversion returned failure'))
-            logger.info(f"HLS conversion completed for video {video.id}")
+            # Route through shared trigger (feature-flagged)
+            from apps.streaming.services.conversion_client import trigger_video_processing
+            trigger_video_processing(video, source_key=temp_assembled_path)
+            logger.info(f"Triggered video processing for video {video.id} with local path")
         except Exception as e:
-            logger.error(f"Conversion failed for video {video.id}: {str(e)}", exc_info=True)
-            send_video_error(video_id, "HLS conversion failed", str(e))
-            return {'success': False, 'error': str(e), 'video_id': video.id}
+            logger.error(f"Could not queue video conversion task: {str(e)}", exc_info=True)
+            send_video_error(video_id, "Could not start HLS conversion", str(e))
         
         return {
             'success': True,
@@ -1285,13 +1026,9 @@ def assemble_chunks_task(self, video_id: int, filename: str):
         raise
     
     finally:
-        _release_processing_slot(self.request.id)
+        # Always stop the queue when task ends
         try:
             db_queue.stop(timeout=5)
-        except:
-            pass
-        try:
-            cache.delete(lock_key)
         except:
             pass
     
@@ -1721,87 +1458,4 @@ def import_video_from_google_drive(self, video_id: int, google_drive_url: str):
         except Exception:
             pass
 
-
-@celery_app.task(bind=True)
-def reconstruct_mp4_for_download_task(self, video_id: int):
-    """
-    Reconstruct MP4 from existing HLS segments and upload to R2.
-    
-    Runs OUTSIDE the upload/conversion pipeline — triggered by a
-    Django signal after processing_status becomes 'completed'.
-    Does NOT touch chunks, upload, or HLS conversion.
-    """
-    import subprocess
-
-    try:
-        video = Video.objects.get(id=video_id)
-    except Video.DoesNotExist:
-        logger.error(f"reconstruct_mp4: Video {video_id} not found")
-        return {'success': False, 'error': 'Video not found'}
-
-    if video.download_path:
-        logger.info(f"reconstruct_mp4: Video {video_id} already has download_path, skipping")
-        return {'success': True, 'skipped': True}
-
-    if not video.hls_path:
-        logger.warning(f"reconstruct_mp4: Video {video_id} has no hls_path, skipping")
-        return {'success': False, 'error': 'No HLS path'}
-
-    from django.conf import settings
-    backend_url = getattr(settings, 'BACKEND_URL', 'https://backend.farajayangutv.co.tz')
-    playlist_url = f'{backend_url}/streaming/hls/{video.uid}/master.m3u8'
-
-    tmp_fd, output_path = None, None
-    try:
-        tmp_fd, output_path = tempfile.mkstemp(suffix='.mp4')
-        os.close(tmp_fd)
-
-        cmd = [
-            'ffmpeg', '-y',
-            '-i', playlist_url,
-            '-c', 'copy',
-            '-bsf:a', 'aac_adtstoasc',
-            '-movflags', '+faststart',
-            '-reconnect', '1',
-            '-reconnect_at_eof', '1',
-            '-reconnect_streamed', '1',
-            '-reconnect_delay_max', '30',
-            '-timeout', '0',
-            '-loglevel', 'error',
-            output_path,
-        ]
-
-        logger.info(f"reconstruct_mp4: Running ffmpeg for video {video_id}")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
-
-        if result.returncode != 0:
-            logger.error(f"reconstruct_mp4: ffmpeg failed for {video_id}: {result.stderr}")
-            return {'success': False, 'error': result.stderr[-200:]}
-
-        if not os.path.exists(output_path) or os.path.getsize(output_path) < 10000:
-            logger.error(f"reconstruct_mp4: Output file too small for {video_id}")
-            return {'success': False, 'error': 'Output file too small'}
-
-        r2_path = f'videos/downloads/{video.uid}/original.mp4'
-        with open(output_path, 'rb') as f:
-            default_storage.save(r2_path, f)
-
-        video.download_path = r2_path
-        video.save(update_fields=['download_path'])
-
-        size_mb = os.path.getsize(output_path) / (1024 * 1024)
-        logger.info(f"reconstruct_mp4: Done {video.uid} → {r2_path} ({size_mb:.1f} MB)")
-        return {'success': True, 'path': r2_path, 'size_mb': size_mb}
-
-    except subprocess.TimeoutExpired:
-        logger.error(f"reconstruct_mp4: Timeout for video {video_id}")
-        return {'success': False, 'error': 'Timeout'}
-    except Exception as e:
-        logger.error(f"reconstruct_mp4: Error for video {video_id}: {e}")
-        return {'success': False, 'error': str(e)}
-    finally:
-        if output_path and os.path.exists(output_path):
-            try:
-                os.remove(output_path)
-            except OSError:
-                pass
+        raise
