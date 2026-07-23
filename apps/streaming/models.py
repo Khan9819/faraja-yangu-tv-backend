@@ -143,8 +143,11 @@ def trigger_mp4_reconstruction(sender, instance, created, **kwargs):
         if update_fields and 'processing_status' not in update_fields:
             return
         if not instance.download_path:
-            from apps.streaming.tasks.tasks import reconstruct_mp4_for_download_task
-            reconstruct_mp4_for_download_task.delay(instance.id)
+            try:
+                from apps.streaming.tasks.tasks import reconstruct_mp4_for_download_task
+                reconstruct_mp4_for_download_task.delay(instance.id)
+            except ImportError:
+                pass
     
 
 class Comment(BaseModel):
