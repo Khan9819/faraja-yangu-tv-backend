@@ -820,54 +820,10 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
                     send_video_error(video_id, "Failed to upload HLS files", str(upload_error))
                     raise
         
-        # Stage 4: Finalize
-        send_video_progress(video_id, "uploading", 95, "Finalizing video processing...",
-                           checkpoint={'stage': 'finalizing'})
-        
-        # Verify master playlist exists in R2 with retries
-        # Large HLS uploads (>1000 segments) may take time to become visible on R2
+        # Verify master playlist is on R2
         remote_master = f"{hls_output_dir}/master.m3u8"
-        max_verify_attempts = 20
-        verify_delay = 5
-        master_found = False
-        for attempt in range(max_verify_attempts):
-            if default_storage.exists(remote_master):
-                master_found = True
-                break
-            logger.warning(
-                f"Master playlist not yet visible on R2 (attempt {attempt + 1}/{max_verify_attempts}): {remote_master}"
-            )
-            if attempt < max_verify_attempts - 1:
-                time.sleep(verify_delay)
-                verify_delay = min(verify_delay * 2, 30)
-        if not master_found:
-            # Fallback: if master.m3u8 exists locally, proceed despite R2 inconsistency
-            # This handles R2 eventual consistency where recently uploaded files aren't visible yet
-            local_master_fallback = os.path.join(local_hls_dir, 'master.m3u8') if local_hls_dir else None
-            if local_master_fallback and os.path.exists(local_master_fallback):
-                logger.warning(
-                    f"master.m3u8 exists locally at {local_master_fallback} but not visible on R2 "
-                    f"after {max_verify_attempts} attempts. "
-                    f"Proceeding anyway due to R2 eventual consistency."
-                )
-                master_found = True
-            else:
-                # Diagnostic: check what files actually exist in the HLS directory
-                try:
-                    if hasattr(default_storage, 'connection') and hasattr(default_storage.connection, 'meta'):
-                        s3_client = default_storage.connection.meta.client
-                        paginator = s3_client.get_paginator('list_objects_v2')
-                        pages = paginator.paginate(Bucket=default_storage.bucket_name, Prefix=f"{hls_output_dir}/")
-                        r2_files = []
-                        for page in pages:
-                            for obj in page.get('Contents', []):
-                                r2_files.append(obj['Key'])
-                        logger.error(f"Stage4 diagnostic: found {len(r2_files)} files in R2 at {hls_output_dir}/: {r2_files[:20]}...")
-                    else:
-                        logger.error(f"Stage4 diagnostic: master.m3u8 MISSING both locally and on R2")
-                except Exception as diag_err:
-                    logger.error(f"Stage4 diagnostic error: {diag_err}")
-                raise Exception(f"HLS upload verification failed after {max_verify_attempts} attempts: master.m3u8 not found at {remote_master}")
+        if not default_storage.exists(remote_master):
+            raise Exception(f"Master playlist missing on R2: {remote_master}")
         
         # Update video object with HLS information
         video.hls_path = hls_output_dir
