@@ -176,38 +176,29 @@ def _send_notification(fcm_token: str, title: str, body: str, data: dict = None)
 @celery_app.task(bind=True)
 def send_push_notification(self, target: UserGroupTypes, notification_type: NotificationTypes, title: str, message: str, metadata: dict = None):
     """
-    Send push notifications to a group of users + record persistent history.
-    Uses DB-level atomic idempotency (SELECT FOR UPDATE) to prevent duplicates.
+    Send push notifications to a group of users.
+    
+    Args:
+        target: User group to send notifications to (ALL, CLIENTS, ADMINS)
+        notification_type: Type of notification (NEW_VIDEO, COMMENT_REPLY)
+        title: Notification title
+        message: Notification body (supports --username-- placeholder)
+        metadata: Optional dict with extra data. For videos, include 'video_id' key.
     """
     close_old_connections()
-    from django.db import transaction
     
+    get_users = _get_users(target)
+    sent_count = 0
+    failed_count = 0
+    
+    # Extract video_id from metadata if present
     video_uid = metadata.get('video_id') if metadata else None
-    video_id = metadata.get('db_video_id') if metadata else None
     
-    # Atomic DB-level idempotency
-    if video_id:
-        try:
-            from apps.streaming.models import Video
-            with transaction.atomic():
-                v = Video.objects.select_for_update().only('notification_sent').get(id=video_id)
-                if v.notification_sent:
-                    logger.info(f"Video {video_id} notification already sent, skipping")
-                    return
-                Video.objects.filter(id=video_id).update(notification_sent=True)
-        except Video.DoesNotExist:
-            pass
-        except Exception as e:
-            logger.error(f"DB idempotency check failed for video {video_id}: {e}")
     if not title:
         if notification_type == NotificationTypes.NEW_VIDEO:
             title = "New Video Uploaded"
         elif notification_type == NotificationTypes.COMMENT_REPLY:
             title = "You have a new comment reply"
-    
-    get_users = _get_users(target)
-    sent_count = 0
-    failed_count = 0
     
     print("Notification sent to: ", get_users)
     
@@ -675,8 +666,6 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
             video.save(update_fields=['processing_status', 'processing_error'])
         except:
             pass
-        
-        raise
         
         db_queue.stop(timeout=5)
         # Release lock before retry so the retry can acquire it
