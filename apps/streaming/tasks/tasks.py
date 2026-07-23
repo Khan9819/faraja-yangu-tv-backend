@@ -200,11 +200,6 @@ def send_push_notification(self, target: UserGroupTypes, notification_type: Noti
     sent_count = 0
     failed_count = 0
     
-        if notification_type == NotificationTypes.NEW_VIDEO:
-            title = "New Video Uploaded"
-        elif notification_type == NotificationTypes.COMMENT_REPLY:
-            title = "You have a new comment reply"
-    
     print("Notification sent to: ", get_users)
     
     for user in get_users:
