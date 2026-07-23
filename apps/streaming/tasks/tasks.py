@@ -524,6 +524,16 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
         send_video_progress(video_id, "uploading", 95, "Finalizing video processing...",
                            checkpoint={'stage': 'finalizing'})
         
+        # Verify master playlist exists on R2 before marking complete
+        remote_master = f"{hls_output_dir}/master.m3u8"
+        if not default_storage.exists(remote_master):
+            logger.error(f"Upload verification failed: {remote_master} not found on R2")
+            send_video_error(video_id, "R2 upload failed", f"Master playlist not found: {remote_master}")
+            video.processing_status = 'failed'
+            video.processing_error = f"R2 upload verification failed: {remote_master} not found"
+            video.save(update_fields=['processing_status', 'processing_error'])
+            raise Exception(f"R2 upload verification failed")
+        
         # Update video object with HLS information
         video.hls_path = hls_output_dir
         video.hls_master_playlist = f"{hls_output_dir}/master.m3u8"
@@ -742,8 +752,9 @@ def upload_hls_files_to_storage(local_dir: str, remote_dir: str, max_workers: in
                 uploaded_path = upload_single_file_with_retry(local_path, remote_path)
                 uploaded_files.append(uploaded_path)
                 
-                # Log progress every 50 files or at the end
+                # Close stale DB connections every 50 files to prevent connection pool exhaustion
                 if (i + 1) % 50 == 0 or i == total_files - 1:
+                    close_old_connections()
                     logger.info(f"Uploaded {i + 1}/{total_files} HLS files")
                     
             except Exception as e:
