@@ -196,15 +196,10 @@ def send_push_notification(self, target: UserGroupTypes, notification_type: Noti
         except Exception as e:
             logger.error(f"DB idempotency failed for {video_id}: {e}")
     
-    if not title:
-        if notification_type == NotificationTypes.NEW_VIDEO:
-            title = "New Video Uploaded"
-        elif notification_type == NotificationTypes.COMMENT_REPLY:
-            title = "You have a new comment reply"
-    
     get_users = _get_users(target)
     sent_count = 0
     failed_count = 0
+    
         if notification_type == NotificationTypes.NEW_VIDEO:
             title = "New Video Uploaded"
         elif notification_type == NotificationTypes.COMMENT_REPLY:
