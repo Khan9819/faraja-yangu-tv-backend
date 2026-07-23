@@ -1023,8 +1023,7 @@ def cleanup_local_files(video_file_path: str, hls_dir: str):
         hls_dir: Path to HLS output directory
     """
     try:
-    import tempfile
-    import shutil
+        import tempfile
         temp_dir = tempfile.gettempdir()
         
         # Remove original video if it's a temp file
