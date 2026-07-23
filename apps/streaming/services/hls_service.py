@@ -93,8 +93,11 @@ class HLSService:
                         playlist_ref = lines[i + 1].strip()
                         if playlist_ref and not playlist_ref.startswith('#'):
                             variant_info['playlist_path'] = playlist_ref
-                            # Extract variant name from path (e.g., "360p/360p.m3u8" -> "360p")
-                            variant_info['name'] = playlist_ref.split('/')[0] if '/' in playlist_ref else playlist_ref.replace('.m3u8', '')
+                            # Extract variant name from path (e.g., "360p/360p.m3u8" -> "360p", "720p.mp4" -> "720p")
+                            if '/' in playlist_ref:
+                                variant_info['name'] = playlist_ref.split('/')[0]
+                            else:
+                                variant_info['name'] = playlist_ref.rsplit('.', 1)[0]
                             variants.append(variant_info)
             
             # Sort by bandwidth (lowest first for starter segments)
@@ -198,6 +201,15 @@ class HLSService:
         variant_path = variant.get('playlist_path')
         if not variant_path:
             return []
+        
+        # New MP4 format: each variant is a single .mp4 file, not a playlist with .ts segments.
+        # Return the MP4 URL directly as a starter "segment".
+        if variant_path.endswith('.mp4'):
+            url = f"{self.backend_url}/streaming/hls/{self.video_uid}/{variant_path}"
+            cache.set(cache_key, [url], timeout=3600)
+            return [url]
+        
+        # Legacy HLS format: parse variant playlist for .ts segments
         
         # Get variant directory (e.g., "360p" from "360p/360p.m3u8")
         variant_dir = variant_path.split('/')[0] if '/' in variant_path else ''
