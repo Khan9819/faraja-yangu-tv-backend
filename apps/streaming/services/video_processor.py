@@ -9,12 +9,15 @@ Features:
 - Resume capability from checkpoints
 """
 import os
+import signal
 import subprocess
 import logging
 import shutil
 import re
 import gc
 import platform
+import threading
+import time
 from pathlib import Path
 from typing import Dict, List, Tuple, Callable, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -22,6 +25,11 @@ from dataclasses import dataclass, field
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
+
+STALL_TIMEOUT_SECONDS = 300
+
+class FFmpegStalledError(Exception):
+    pass
 
 
 @dataclass
@@ -251,7 +259,8 @@ class VideoProcessor:
         
         # Load configurable settings from Django settings
         self.encoding_preset = getattr(settings, 'HLS_ENCODER_PRESET', 'superfast')
-        self.ffmpeg_threads = getattr(settings, 'HLS_FFMPEG_THREADS', 3)
+        import multiprocessing
+        self.ffmpeg_threads = getattr(settings, 'HLS_FFMPEG_THREADS', multiprocessing.cpu_count())
         self.skip_upscaling = getattr(settings, 'HLS_SKIP_UPSCALING', True)
         self.enabled_variants = getattr(settings, 'HLS_VARIANTS', ['1080p', '720p', '480p', '360p'])
         self.use_single_pass = getattr(settings, 'HLS_SINGLE_PASS', False)
@@ -726,23 +735,24 @@ class VideoProcessor:
             cmd = self._build_ffmpeg_command(preset, segment_pattern, playlist_path)
             
             # Execute FFmpeg with real-time progress monitoring
-            # Use line buffering for immediate progress updates
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                bufsize=1,  # Line buffered for immediate progress
-                universal_newlines=True
+                bufsize=1,
+                universal_newlines=True,
+                preexec_fn=os.setsid
             )
             
-            # Monitor progress (reads stdout until EOF)
+            # Monitor progress with watchdog (reads stdout thread, detects stalls)
             self._monitor_ffmpeg_progress(process, variant_name, variant_idx, total_variants, video_duration)
             
-            # Wait for process to complete and capture stderr
-            _, stderr = process.communicate(timeout=7200)  # 2 hour timeout per variant
+            # Wait for process to complete
+            process.wait(timeout=7200)
             
             if process.returncode != 0:
+                _, stderr = process.communicate(timeout=10)
                 logger.error(f"FFmpeg error for {variant_name}: {stderr}")
                 self._update_variant_progress(variant_name, 0, f"{variant_name} failed", 'failed')
                 return None
@@ -767,6 +777,13 @@ class VideoProcessor:
                 'playlist_path': playlist_path
             }
             
+        except FFmpegStalledError as e:
+            logger.error(f"FFmpeg stalled for {variant_name}: {e}")
+            self._update_variant_progress(variant_name, 0, f"{variant_name} stalled", 'failed')
+            variant_path = os.path.join(self.output_dir, variant_name)
+            if os.path.exists(variant_path):
+                shutil.rmtree(variant_path)
+            raise
         except subprocess.TimeoutExpired:
             logger.error(f"Timeout creating HLS variant {variant_name}")
             self._update_variant_progress(variant_name, 0, f"{variant_name} timed out", 'failed')
@@ -958,40 +975,58 @@ class VideoProcessor:
     
     def _monitor_ffmpeg_progress(self, process: subprocess.Popen, variant_name: str, 
                                    variant_idx: int, total_variants: int, video_duration: float):
-        """
-        Monitor FFmpeg progress and send updates via callback.
-        Optimized to minimize blocking and ensure smooth progress updates.
-        
-        Args:
-            process: FFmpeg subprocess
-            variant_name: Name of the variant being processed
-            variant_idx: Index of current variant
-            total_variants: Total number of variants
-            video_duration: Total video duration in seconds
-        """
-        last_variant_progress = 0
-        
+        last_progress = [0]
+        last_time = [time.time()]
+
+        def read_stdout():
+            try:
+                for line in process.stdout:
+                    if 'out_time_ms=' in line:
+                        match = re.search(r'out_time_ms=(\d+)', line)
+                        if match and video_duration > 0:
+                            time_ms = int(match.group(1))
+                            time_sec = time_ms / 1_000_000
+                            variant_progress = min(100, int((time_sec / video_duration) * 100))
+
+                            if variant_progress - last_progress[0] >= 3:
+                                self._update_variant_progress(
+                                    variant_name,
+                                    variant_progress,
+                                    f"Converting {variant_name}: {variant_progress}%"
+                                )
+                                last_progress[0] = variant_progress
+                            last_time[0] = time.time()
+            except Exception as e:
+                logger.warning(f"Error reading ffmpeg stdout: {str(e)}")
+
+        reader_thread = threading.Thread(target=read_stdout, daemon=True)
+        reader_thread.start()
+
         try:
-            # Use non-blocking iteration to prevent CPU stalls
-            for line in process.stdout:
-                # Parse FFmpeg progress output
-                if 'out_time_ms=' in line:
-                    match = re.search(r'out_time_ms=(\d+)', line)
-                    if match and video_duration > 0:
-                        time_ms = int(match.group(1))
-                        time_sec = time_ms / 1_000_000
-                        variant_progress = min(100, int((time_sec / video_duration) * 100))
-                        
-                        # Send update every 3% change for smoother progress (reduced from 5%)
-                        if variant_progress - last_variant_progress >= 3:
-                            self._update_variant_progress(
-                                variant_name,
-                                variant_progress,
-                                f"Converting {variant_name}: {variant_progress}%"
-                            )
-                            last_variant_progress = variant_progress
-        except Exception as e:
-            logger.warning(f"Error monitoring FFmpeg progress: {str(e)}")
+            while reader_thread.is_alive():
+                reader_thread.join(timeout=STALL_TIMEOUT_SECONDS / 2)
+                if not reader_thread.is_alive():
+                    break
+                elapsed = time.time() - last_time[0]
+                if elapsed > STALL_TIMEOUT_SECONDS:
+                    logger.error(
+                        f"FFmpeg stalled for variant {variant_name} - "
+                        f"no progress for {elapsed:.0f}s (limit {STALL_TIMEOUT_SECONDS}s)"
+                    )
+                    try:
+                        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                    except Exception:
+                        process.kill()
+                    raise FFmpegStalledError(
+                        f"FFmpeg stalled: {variant_name} - no progress for {elapsed:.0f}s"
+                    )
+        finally:
+            if reader_thread.is_alive():
+                try:
+                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                except Exception:
+                    process.kill()
+                reader_thread.join(timeout=10)
     
     def _validate_disk_space(self):
         """

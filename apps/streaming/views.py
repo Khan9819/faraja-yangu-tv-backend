@@ -2566,3 +2566,51 @@ def tv_device_auth(request):
         'user_id': user.id,
         'is_new_device': created,
     })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def retry_conversion(request, video_id):
+    """
+    Manually retry a failed/stuck video conversion.
+    Clears stale locks, reads checkpoint, and re-queues convert_video_to_hls.
+    Supports resume from last completed variant.
+    """
+    from django.core.cache import cache
+    from apps.streaming.tasks.tasks import convert_video_to_hls
+
+    try:
+        video = Video.objects.get(id=video_id)
+    except Video.DoesNotExist:
+        return error_response({'message': 'Video not found'}, code=404)
+
+    if video.processing_status not in ('failed', 'killed', 'pending'):
+        return error_response({
+            'message': f'Video is {video.processing_status}, not failed/killed/pending'
+        }, code=400)
+
+    checkpoint = video.processing_checkpoint or {}
+    completed_variants = checkpoint.get('completed_variants', [])
+    local_path = checkpoint.get('local_video_path')
+    stage = checkpoint.get('stage', 'start')
+
+    resume_from = completed_variants[-1] if completed_variants else None
+
+    lock_key = f'video_conversion_lock_{video_id}'
+    cache.delete(lock_key)
+
+    video.processing_status = 'processing'
+    video.processing_error = None
+    video.processing_message = f'Retry queued' + (f' - resuming from {resume_from}' if resume_from else '')
+    video.save(update_fields=['processing_status', 'processing_error', 'processing_message'])
+
+    task = convert_video_to_hls.delay(video_id, local_video_path=local_path)
+
+    return success_response({
+        'status': 'retry_queued',
+        'task_id': task.id,
+        'video_id': video_id,
+        'stage': stage,
+        'completed_variants': completed_variants,
+        'resuming_from_variant': resume_from,
+    })

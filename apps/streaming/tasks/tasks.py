@@ -280,11 +280,11 @@ def notify_user_of_reply(self, commenter_user_id: int, replier_name: str, commen
     autoretry_for=(Exception,),
     retry_backoff=60,
     retry_backoff_max=600,
-    max_retries=0,  # Reduced from 3 to prevent too many duplicate processes
+    max_retries=3,
     acks_late=True,
     reject_on_worker_lost=True,
-    soft_time_limit=14400,
-    time_limit=18000,
+    soft_time_limit=5400,
+    time_limit=7200,
 )
 def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
     """

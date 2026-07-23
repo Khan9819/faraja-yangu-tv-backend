@@ -6,6 +6,7 @@ Django remains the source of truth — the microservice is a stateless worker.
 """
 import json
 import logging
+import multiprocessing
 import uuid
 
 from django.conf import settings
@@ -59,7 +60,7 @@ def build_conversion_job(video: Video, source_key: str | None = None) -> dict:
             "segment_duration": getattr(settings, 'HLS_SEGMENT_DURATION', 6),
             "encoder_preset": getattr(settings, 'HLS_ENCODER_PRESET', 'superfast'),
             "skip_upscaling": getattr(settings, 'HLS_SKIP_UPSCALING', True),
-            "threads": getattr(settings, 'HLS_FFMPEG_THREADS', 0),
+            "threads": getattr(settings, 'HLS_FFMPEG_THREADS', multiprocessing.cpu_count()),
             "prefer_hardware": True,
         },
         "checkpoint": video.processing_checkpoint or {},

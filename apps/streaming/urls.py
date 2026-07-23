@@ -91,4 +91,7 @@ urlpatterns = [
     # CMS: Video Viewers & Interactions
     path('videos/<int:video_id>/viewers/', views.video_viewers, name='video-viewers'),
     path('videos/<int:video_id>/interactions/', views.video_interactions, name='video-interactions'),
+
+    # Retry failed/stuck video conversion
+    path('retry-conversion/<int:video_id>/', views.retry_conversion, name='retry-conversion'),
 ]

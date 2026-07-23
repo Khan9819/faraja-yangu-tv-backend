@@ -416,17 +416,18 @@ CELERY_TASK_SOFT_TIME_LIMIT = 150 * 60  # 2.5 hours soft limit
 # Prevent broker connection issues from killing tasks
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_BROKER_TRANSPORT_OPTIONS = {
-    'visibility_timeout': 14400,  # 4 hours - must be > longest task time (large videos: assembly ~90min + conversion ~90min)
+    'visibility_timeout': 7200,  # 2 hours - must be > time_limit (90 min)
     'socket_timeout': 30,
     'socket_connect_timeout': 30,
-    'max_connections': 50,  # Increased from default ~10 to handle concurrent large video processing
+    'max_connections': 50,
     'retry_on_timeout': True,
 }
 
 # Task acknowledgment settings for reliability
 CELERY_TASK_ACKS_LATE = True  # Acknowledge after task completes, not when received
 CELERY_TASK_REJECT_ON_WORKER_LOST = True  # Re-queue task if worker dies
-CELERY_WORKER_PREFETCH_MULTIPLIER = 1  # Only fetch 1 task at a time for long tasks
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+CELERY_WORKER_CANCEL_LONG_RUNNING_TASKS_ON_CONNECTION_LOSS = True  # Only fetch 1 task at a time for long tasks
 
 # Result backend settings
 CELERY_RESULT_EXPIRES = 86400  # Results expire after 24 hours
