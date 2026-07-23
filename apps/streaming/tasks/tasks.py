@@ -593,6 +593,7 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
         notification_metadata = {
             'type': 'video_upload',
             'video_id': str(video.uid),
+            'db_video_id': video.id,
             'video_title': video.title or '',
             'video_thumbnail': thumbnail_url,
             'video_category': category_name,
@@ -694,8 +695,6 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
             cache.delete(lock_key)
         except:
             pass
-        
-        raise
 
 def upload_hls_files_to_storage(local_dir: str, remote_dir: str, max_workers: int = 2) -> list:
     """
