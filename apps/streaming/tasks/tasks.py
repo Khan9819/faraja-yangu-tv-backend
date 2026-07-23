@@ -695,7 +695,9 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
                     
                     proc.wait()
                     if proc.returncode != 0:
-                        raise Exception(f"ffmpeg exit {proc.returncode} for {variant_name}")
+                        # Capture remaining stderr for error diagnosis
+                        stderr_output = proc.stderr.read() if proc.stderr else ''
+                        raise Exception(f"ffmpeg exit {proc.returncode} for {variant_name}: {stderr_output[-500:]}")
                     
                     logger.info(f"{variant_name} completed for video {video_id}")
                     
