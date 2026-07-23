@@ -735,7 +735,7 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
         # Verify master playlist is on R2
         remote_master = f"{hls_output_dir}/master.m3u8"
         if not default_storage.exists(remote_master):
-            raise Exception(f"Master playlist missing on R2: {remote_master}")
+            raise Exception(f"Upload verification failed: {remote_master} not found on R2")
         
         # Update video object with HLS information
         video.hls_path = hls_output_dir
