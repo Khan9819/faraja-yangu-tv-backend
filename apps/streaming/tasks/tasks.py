@@ -683,8 +683,9 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
         try:
             cache.delete(lock_key)
         except:
-            pass 
-
+            pass
+        
+        raise
 
 def upload_hls_files_to_storage(local_dir: str, remote_dir: str, max_workers: int = 2) -> list:
     """
