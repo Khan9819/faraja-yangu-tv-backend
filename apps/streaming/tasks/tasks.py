@@ -684,7 +684,9 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
                     logger.info(f"Converting {variant_name}: ultrafast, {q['scale']}, {q['bitrate']}")
                     proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, text=True, bufsize=1)
                     
+                    stderr_lines = []
                     for line in proc.stderr:
+                        stderr_lines.append(line)
                         match = re.search(r'time=(\d+):(\d+):(\d+\.?\d*)', line)
                         if match and video_duration > 0:
                             secs = int(match.group(1))*3600 + int(match.group(2))*60 + float(match.group(3))
@@ -696,9 +698,8 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
                     
                     proc.wait()
                     if proc.returncode != 0:
-                        # Capture remaining stderr for error diagnosis
-                        stderr_output = proc.stderr.read() if proc.stderr else ''
-                        raise Exception(f"ffmpeg exit {proc.returncode} for {variant_name}: {stderr_output[-500:]}")
+                        stderr_tail = ''.join(stderr_lines[-20:])
+                        raise Exception(f"ffmpeg exit {proc.returncode} for {variant_name}: {stderr_tail[-500:]}")
                     
                     logger.info(f"{variant_name} completed for video {video_id}")
                     
