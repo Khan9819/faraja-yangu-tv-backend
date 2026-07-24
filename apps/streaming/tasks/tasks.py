@@ -2,6 +2,7 @@
 Celery tasks for video processing and HLS conversion.
 """
 import os
+import time
 from pathlib import Path
 import logging
 from datetime import timedelta, datetime, timezone
@@ -783,21 +784,45 @@ def cleanup_local_files(video_file_path: str, hls_dir: str):
         
         # Remove original video if it's a temp file
         if video_file_path and os.path.exists(video_file_path):
-            # Check if file is in temp directory
             if os.path.dirname(video_file_path).startswith(temp_dir):
                 os.remove(video_file_path)
                 logger.debug(f"Removed temp video file: {video_file_path}")
         
         # Remove HLS directory if it's a temp location
         if hls_dir and os.path.exists(hls_dir):
-            # Check if directory is in temp directory
             if hls_dir.startswith(temp_dir):
                 import shutil
                 shutil.rmtree(hls_dir)
                 logger.debug(f"Removed temp HLS directory: {hls_dir}")
+        
+        # Clean orphaned temp dirs older than 24 hours
+        _cleanup_orphaned_tmp_files(temp_dir)
             
     except Exception as e:
         logger.warning(f"Error during cleanup: {str(e)}")
+
+
+def _cleanup_orphaned_tmp_files(temp_dir: str):
+    """Remove orphaned hls_* and video_* temp files older than 24 hours."""
+    try:
+        now = time.time()
+        cutoff = now - 86400  # 24 hours
+        for entry in os.listdir(temp_dir):
+            path = os.path.join(temp_dir, entry)
+            if not os.path.exists(path):
+                continue
+            is_old = os.path.getmtime(path) < cutoff
+            if not is_old:
+                continue
+            if entry.startswith('hls_') and os.path.isdir(path):
+                import shutil
+                shutil.rmtree(path)
+                logger.info(f"Cleaned orphaned temp dir: {entry}")
+            elif entry.startswith('video_') and entry.endswith('.mp4') and os.path.isfile(path):
+                os.remove(path)
+                logger.info(f"Cleaned orphaned temp file: {entry}")
+    except Exception as e:
+        logger.warning(f"Error cleaning orphaned tmp files: {e}")
 
 
 @celery_app.task(bind=True)

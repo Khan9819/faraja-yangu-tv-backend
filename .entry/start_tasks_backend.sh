@@ -6,6 +6,20 @@ export TZ=Africa/Dar_es_Salaam
 # Create logs directory if it doesn't exist
 mkdir -p logs
 
+# Trap SIGTERM/SIGINT to gracefully forward signal to child processes.
+# Without this, Docker sends SIGTERM to PID 1 only (this script),
+# which doesn't reach the Celery workers or ffmpeg children.
+# After grace period (~10s), Docker escalates to SIGKILL (exit 137),
+# killing ffmpeg mid-encode and wasting hours of work.
+cleanup() {
+    echo "Received termination signal, forwarding to workers..."
+    kill -TERM $VIDEO_WORKER_PID $GENERAL_WORKER_PID $BEAT_PID 2>/dev/null
+    wait $VIDEO_WORKER_PID $GENERAL_WORKER_PID $BEAT_PID 2>/dev/null
+    echo "All workers terminated gracefully."
+    exit 0
+}
+trap cleanup SIGTERM SIGINT
+
 # Set log file paths
 VIDEO_WORKER_LOG="logs/celery_video_worker.log"
 GENERAL_WORKER_LOG="logs/celery_general_worker.log"

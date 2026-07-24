@@ -737,10 +737,16 @@ class VideoProcessor:
             cmd = self._build_ffmpeg_command(preset, segment_pattern, playlist_path)
             
             # Execute FFmpeg with real-time progress monitoring
+            # NOTE: stderr=DEVNULL is critical to prevent pipe deadlock.
+            # ffmpeg writes extensive log output to stderr; if nobody reads it,
+            # the pipe buffer fills up (64KB), ffmpeg blocks on write(2),
+            # no frames are encoded, watchdog detects stall after 300s.
+            # Progress comes via -progress pipe:1 on stdout, so stderr is safe
+            # to discard during encoding.
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
                 text=True,
                 bufsize=1,
                 universal_newlines=True,
@@ -754,9 +760,8 @@ class VideoProcessor:
             process.wait(timeout=7200)
             
             if process.returncode != 0:
-                _, stderr = process.communicate(timeout=10)
-                logger.error(f"FFmpeg error for {variant_name}: {stderr}")
-                self._update_variant_progress(variant_name, 0, f"{variant_name} failed", 'failed')
+                logger.error(f"FFmpeg exited with code {process.returncode} for {variant_name}")
+                self._update_variant_progress(variant_name, 0, f"{variant_name} failed (exit {process.returncode})", 'failed')
                 return None
             
             # Validate output
@@ -830,6 +835,8 @@ class VideoProcessor:
         
         # Common encoding parameters optimized for CPU utilization
         cmd.extend([
+            '-nostats',
+            '-loglevel', 'warning',
             '-c:a', 'aac',
             '-b:v', preset['video_bitrate'],
             '-b:a', preset['audio_bitrate'],
@@ -1019,6 +1026,10 @@ class VideoProcessor:
                         os.killpg(os.getpgid(process.pid), signal.SIGKILL)
                     except Exception:
                         process.kill()
+                    try:
+                        process.wait(timeout=30)
+                    except Exception:
+                        pass
                     raise FFmpegStalledError(
                         f"FFmpeg stalled: {variant_name} - no progress for {elapsed:.0f}s"
                     )
@@ -1028,6 +1039,10 @@ class VideoProcessor:
                     os.killpg(os.getpgid(process.pid), signal.SIGKILL)
                 except Exception:
                     process.kill()
+                try:
+                    process.wait(timeout=30)
+                except Exception:
+                    pass
                 reader_thread.join(timeout=10)
     
     def _validate_disk_space(self):
