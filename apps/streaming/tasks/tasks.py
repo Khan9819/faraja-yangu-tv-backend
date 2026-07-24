@@ -560,7 +560,6 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
         logger.info(f"Video {video_id} metadata updated successfully")
         
         # Clean up: Delete original video file from R2 if it exists (legacy support)
-        # Note: With the new flow, MP4 is kept local and never uploaded to R2
         if video.video:
             try:
                 video.video.delete(save=False)
@@ -570,10 +569,12 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
             except Exception as e:
                 logger.warning(f"Could not delete original video from R2: {str(e)}")
         
-        # Clean up: Delete ALL local temp files (video + HLS directory)
-        cleanup_local_files(video_file_path, local_hls_dir)
-        logger.info(f"Cleaned up local temp files for video {video_id}")
-        
+        # Schedule local temp file cleanup after 24 hours
+        schedule_cleanup_task.apply_async(
+            args=[video_id, video_file_path, local_hls_dir],
+            countdown=86400
+        )
+
         logger.info(f"Successfully converted video {video_id} to HLS")
         
         send_video_complete(video_id, "Video processing completed successfully", hls_output_dir)
@@ -797,6 +798,12 @@ def cleanup_local_files(video_file_path: str, hls_dir: str):
             
     except Exception as e:
         logger.warning(f"Error during cleanup: {str(e)}")
+
+
+@celery_app.task(bind=True)
+def schedule_cleanup_task(self, video_id, video_file_path, hls_dir):
+    cleanup_local_files(video_file_path, hls_dir)
+    logger.info(f"Scheduled cleanup completed for video {video_id}")
 
 
 @celery_app.task(
