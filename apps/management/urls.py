@@ -49,4 +49,11 @@ urlpatterns = [
     # Comment Conversations (CMS Inbox)
     path('comment-conversations/', views.comment_conversations, name='comment-conversations'),
     path('comment-conversations/<int:user_id>/<int:video_id>/', views.comment_conversation_detail, name='comment-conversation-detail'),
+
+    # Website Posts
+    path('website-posts/', views.list_website_posts, name='list-website-posts'),
+    path('website-posts/create/', views.create_website_post, name='create-website-post'),
+    path('website-posts/<int:pk>/', views.get_website_post, name='get-website-post'),
+    path('website-posts/<int:pk>/update/', views.update_website_post, name='update-website-post'),
+    path('website-posts/<int:pk>/delete/', views.delete_website_post, name='delete-website-post'),
 ]

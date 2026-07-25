@@ -4,3 +4,4 @@ from apps.management.serializers.app_users import AppUserSerializer
 from apps.management.serializers.admin_users import AdminUserSerializer, AdminUserCreateSerializer, AdminUserUpdateSerializer
 from apps.management.serializers.notifications import NotificationSerializer
 from apps.management.serializers.settings import PlatformSettingsSerializer
+from apps.management.serializers.website_post import WebsitePostSerializer, WebsitePostCreateSerializer

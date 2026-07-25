@@ -150,15 +150,40 @@ def _send_notification(fcm_token: str, title: str, body: str, data: dict = None)
     
     # FCM requires all data values to be strings
     string_data = {k: str(v) for k, v in (data or {}).items()}
-    
-    # Data-only message: no 'notification' block so the frontend has full
-    # control over display and tap handling on both Android and iOS.
     string_data['title'] = title
     string_data['body'] = body
     
+    android_config = messaging.AndroidConfig(
+        priority='high',
+        notification=messaging.AndroidNotification(
+            title=title,
+            body=body,
+            sound='faraja_notification',
+            channel_id='video_upload_channel',
+            color='#E7792A',
+        ),
+    )
+    
+    apns_config = messaging.APNSConfig(
+        payload=messaging.APNSPayload(
+            aps=messaging.Aps(
+                alert=messaging.ApsAlert(
+                    title=title,
+                    body=body,
+                ),
+                sound='default',
+                mutable_content=True,
+                content_available=True,
+            ),
+        ),
+    )
+    
     message = messaging.Message(
+        notification=messaging.Notification(title=title, body=body),
         data=string_data,
         token=fcm_token,
+        android=android_config,
+        apns=apns_config,
     )
     
     try:
@@ -284,8 +309,8 @@ def notify_user_of_reply(self, commenter_user_id: int, replier_name: str, commen
     max_retries=3,
     acks_late=True,
     reject_on_worker_lost=True,
-    soft_time_limit=5400,
-    time_limit=7200,
+    soft_time_limit=39600,
+    time_limit=43200,
 )
 def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
     """
@@ -324,6 +349,7 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
     video_file_path = None
     local_hls_dir = None
     conversion_result = None  # Track conversion result for duration
+    processor = None  # Track VideoProcessor for cleanup on timeout
     
     try:
         # Get video object
@@ -441,6 +467,17 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
                                 except Exception as e:
                                     logger.error(f"Failed to update checkpoint for video {video_id}: {e}")
                             db_queue.submit(update_checkpoint)
+                            # ALSO save synchronously as fallback (critical: async queue may not flush on hard kill)
+                            try:
+                                close_old_connections()
+                                Video.objects.filter(id=video_id).update(
+                                    processing_checkpoint={
+                                        'stage': 'converting',
+                                        'completed_variants': cv_snapshot
+                                    }
+                                )
+                            except Exception as e:
+                                logger.error(f"Failed synchronous checkpoint save for video {video_id}: {e}")
                 
                 # Legacy callback for backward compatibility
                 def progress_callback(variant_name: str, progress: int, message: str):
@@ -638,11 +675,16 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
         logger.error(f"Video {video_id} conversion killed - soft time limit exceeded")
         send_video_error(video_id, "Conversion killed - time limit exceeded")
         
+        # Kill active ffmpeg subprocess
+        if processor:
+            processor.cleanup()
+        
         try:
             video = Video.objects.get(id=video_id)
             video.processing_status = 'killed'
             video.processing_error = 'Task killed - time limit exceeded'
-            video.save(update_fields=['processing_status', 'processing_error'])
+            video.processing_checkpoint = video.processing_checkpoint or {}
+            video.save(update_fields=['processing_status', 'processing_error', 'processing_checkpoint'])
         except:
             pass
         
@@ -654,6 +696,10 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
         # Task was forcefully terminated (SIGTERM/SIGKILL)
         logger.error(f"Video {video_id} conversion terminated by signal")
         send_video_error(video_id, "Conversion terminated")
+        
+        # Kill active ffmpeg subprocess
+        if processor:
+            processor.cleanup()
         
         try:
             video = Video.objects.get(id=video_id)
@@ -670,6 +716,10 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
     except Exception as e:
         logger.error(f"Error converting video {video_id} to HLS: {str(e)}")
         send_video_error(video_id, "HLS conversion failed", str(e))
+        
+        # Kill active ffmpeg subprocess
+        if processor:
+            processor.cleanup()
         
         # Update video status to failed (but keep checkpoint for retry)
         try:
@@ -688,6 +738,13 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
         raise
     
     finally:
+        # Kill any remaining ffmpeg subprocess
+        if processor:
+            try:
+                processor.cleanup()
+            except:
+                pass
+        
         # Always stop the queue and release the lock when task ends
         try:
             db_queue.stop(timeout=5)

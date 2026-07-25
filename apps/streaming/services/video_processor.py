@@ -18,6 +18,7 @@ import gc
 import platform
 import threading
 import time
+import celery.exceptions
 from pathlib import Path
 from typing import Dict, List, Tuple, Callable, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -186,39 +187,39 @@ class VideoProcessor:
         {
             'name': '1080p',
             'resolution': '1920x1080',
-            'video_bitrate': '5000k',
+            'video_bitrate': '8000k',
             'audio_bitrate': '192k',
-            'maxrate': '5350k',
-            'bufsize': '7500k'
+            'maxrate': '9000k',
+            'bufsize': '12000k'
         },
         {
             'name': '720p',
             'resolution': '1280x720',
-            'video_bitrate': '2800k',
+            'video_bitrate': '4000k',
             'audio_bitrate': '128k',
-            'maxrate': '2996k',
-            'bufsize': '4200k'
+            'maxrate': '4500k',
+            'bufsize': '6000k'
         },
         {
             'name': '480p',
             'resolution': '854x480',
-            'video_bitrate': '1400k',
+            'video_bitrate': '2000k',
             'audio_bitrate': '128k',
-            'maxrate': '1498k',
-            'bufsize': '2100k'
+            'maxrate': '2500k',
+            'bufsize': '3000k'
         },
         {
             'name': '360p',
             'resolution': '640x360',
-            'video_bitrate': '800k',
+            'video_bitrate': '1000k',
             'audio_bitrate': '96k',
-            'maxrate': '856k',
-            'bufsize': '1200k'
+            'maxrate': '1200k',
+            'bufsize': '2000k'
         },
     ]
     
     # CRF (Constant Rate Factor) for quality - lower = better quality, 23 is default
-    CRF_VALUE = '23'
+    CRF_VALUE = '21'
     
     # Resolution height mapping for skip-upscaling logic
     RESOLUTION_HEIGHT_MAP = {
@@ -258,7 +259,7 @@ class VideoProcessor:
         self.parallel_variants = max(1, min(parallel_variants, len(self.QUALITY_PRESETS)))
         
         # Load configurable settings from Django settings
-        self.encoding_preset = getattr(settings, 'HLS_ENCODER_PRESET', 'superfast')
+        self.encoding_preset = getattr(settings, 'HLS_ENCODER_PRESET', 'faster')
         import multiprocessing
         self.ffmpeg_threads = getattr(settings, 'HLS_FFMPEG_THREADS', multiprocessing.cpu_count())
         self.skip_upscaling = getattr(settings, 'HLS_SKIP_UPSCALING', True)
@@ -284,6 +285,9 @@ class VideoProcessor:
             preset for preset in self.QUALITY_PRESETS 
             if preset['name'] in self.enabled_variants
         ]
+        
+        # Track active ffmpeg subprocess for cleanup
+        self._active_process: Optional[subprocess.Popen] = None
         
         # Per-variant progress tracking
         self._variant_progress: Dict[str, VariantProgress] = {
@@ -756,8 +760,11 @@ class VideoProcessor:
             # Monitor progress with watchdog (reads stdout thread, detects stalls)
             self._monitor_ffmpeg_progress(process, variant_name, variant_idx, total_variants, video_duration)
             
+            # Track this process for cleanup on time limit/termination
+            self._active_process = process
+            
             # Wait for process to complete
-            process.wait(timeout=7200)
+            process.wait(timeout=14400)
             
             if process.returncode != 0:
                 logger.error(f"FFmpeg exited with code {process.returncode} for {variant_name}")
@@ -797,6 +804,9 @@ class VideoProcessor:
             if 'process' in locals():
                 process.kill()
             return None
+        except celery.exceptions.SoftTimeLimitExceeded:
+            self.cleanup()
+            raise
         except Exception as e:
             logger.error(f"Error creating HLS variant {variant_name}: {str(e)}")
             self._update_variant_progress(variant_name, 0, f"{variant_name} error: {str(e)}", 'failed')
@@ -843,7 +853,7 @@ class VideoProcessor:
             '-maxrate', preset['maxrate'],
             '-bufsize', preset['bufsize'],
             '-s', preset['resolution'],
-            '-sws_flags', 'fast_bilinear',
+            '-sws_flags', 'bicubic',
             '-profile:v', 'main',
             '-level', '4.0',
             '-movflags', '+faststart',
@@ -853,8 +863,9 @@ class VideoProcessor:
             '-start_number', '0',
             '-hls_time', str(self.segment_duration),
             '-hls_list_size', '0',
+            '-hls_playlist_type', 'vod',
             '-hls_segment_filename', segment_pattern,
-            '-hls_flags', 'independent_segments',  # Better for streaming
+            '-hls_flags', 'independent_segments+program_date_time',  # Better for streaming + VOD
             '-f', 'hls',
             '-progress', 'pipe:1',
             playlist_path
@@ -1108,6 +1119,24 @@ class VideoProcessor:
         except Exception as e:
             logger.error(f"Error deleting original file: {str(e)}")
             return False
+    
+    def cleanup(self):
+        """Kill the active ffmpeg subprocess if running."""
+        if self._active_process is not None:
+            try:
+                pgid = os.getpgid(self._active_process.pid)
+                os.killpg(pgid, signal.SIGKILL)
+            except Exception:
+                try:
+                    self._active_process.kill()
+                except Exception:
+                    pass
+                try:
+                    self._active_process.wait(timeout=10)
+                except Exception:
+                    pass
+            self._active_process = None
+            logger.info("Killed active ffmpeg subprocess")
     
     @classmethod
     def get_recommended_parallel_workers(cls) -> int:

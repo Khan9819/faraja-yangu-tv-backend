@@ -3,8 +3,29 @@ from django.urls import path, include
 from django.http import JsonResponse
 from django.shortcuts import render, get_object_or_404
 from django.conf import settings
+from rest_framework.decorators import api_view
+from rest_framework.permissions import AllowAny
+from core.response_wrapper import success_response
 
 PLAY_STORE_URL = 'https://play.google.com/store/apps/details?id=co.tz.farajayangutv.app'
+
+@api_view(['GET'])
+def public_website_posts(request):
+    from apps.management.models import WebsitePost
+    from apps.management.serializers import WebsitePostSerializer
+    posts = WebsitePost.objects.all().order_by('-date', '-created_at')
+    serializer = WebsitePostSerializer(posts, many=True)
+    return success_response(serializer.data)
+
+
+@api_view(['GET'])
+def public_categories_with_cover(request):
+    from apps.streaming.models import Category
+    from apps.streaming.serializers import CategorySerializer
+    categories = Category.objects.filter(cover__isnull=False).order_by('-created_at')
+    serializer = CategorySerializer(categories, many=True)
+    return success_response(serializer.data)
+
 
 def video_og_page(request, uid):
     from apps.streaming.models import Video
@@ -48,6 +69,8 @@ urlpatterns = [
     path('management/', include('apps.management.urls')),
     path('.well-known/assetlinks.json', assetlinks),
     path('video/<str:uid>/', video_og_page, name='video-og'),
+    path('website-posts/', public_website_posts, name='public-website-posts'),
+    path('categories-with-cover/', public_categories_with_cover, name='public-categories-with-cover'),
 
     path('api/authentication/', include('apps.authentication.urls')),
     path('api/streaming/', include('apps.streaming.urls')),
@@ -55,4 +78,6 @@ urlpatterns = [
     path('api/analytics/', include('apps.analytics.urls')),
     path('api/profile/', include('apps.profile.urls')),
     path('api/management/', include('apps.management.urls')),
+    path('api/website-posts/', public_website_posts, name='api-public-website-posts'),
+    path('api/categories-with-cover/', public_categories_with_cover, name='api-public-categories-with-cover'),
 ]

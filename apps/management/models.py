@@ -1,7 +1,20 @@
 from django.db import models
 from core.base_model import BaseModel
 
-# Create your models here.
+
+class WebsitePost(BaseModel):
+    cover_image = models.ImageField(upload_to='website_posts', null=True, blank=True)
+    title = models.CharField(max_length=255)
+    description = models.TextField()
+    date = models.DateField()
+
+    class Meta:
+        verbose_name = 'Website Post'
+        verbose_name_plural = 'Website Posts'
+        ordering = ['-date', '-created_at']
+
+    def __str__(self):
+        return self.title
 
 
 class PlatformSettings(BaseModel):

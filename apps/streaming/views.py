@@ -1226,6 +1226,12 @@ def stream_hls(request, video_slug, file_path):
             hls_service = HLSService(video_slug)
             modified_content = hls_service.rewrite_playlist_urls(content, file_path)
             
+            # Strip PROGRAM-DATE-TIME lines to avoid player duration issues
+            modified_content = '\n'.join(
+                line for line in modified_content.split('\n')
+                if not line.strip().startswith('#EXT-X-PROGRAM-DATE-TIME:')
+            )
+            
             # Inject ad markers for variant playlists (not master playlist)
             if '/' in file_path:  # This is a variant playlist like "1080p/1080p.m3u8"
                 modified_content = inject_ad_markers(modified_content, video_slug)
