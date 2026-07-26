@@ -1,0 +1,15 @@
+name: Deploy Backend to CapRover
+on:
+  push:
+    branches: [master]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to CapRover
+        uses: caprover/deploy-from-github-action@v1.1.0
+        with:
+          server: ${{ secrets.CAPROVER_URL }}
+          app: ${{ secrets.CAPROVER_APP_BACKEND }}
+          password: ${{ secrets.CAPROVER_PASSWORD }}
