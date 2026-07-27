@@ -40,7 +40,7 @@
     .card img {
       width: 100%;
       border-radius: 12px;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
       margin-bottom: 20px;
     }
     .card h1 {
@@ -74,6 +74,15 @@
       font-size: 0.85rem;
     }
   </style>
+  <script>
+    (function() {
+      var ua = navigator.userAgent.toLowerCase();
+      var isBot = /bot|crawl|spider|facebook|twitter|whatsapp|slack|telegram|discord|preview|embed|scrape/i.test(ua);
+      if (!isBot) {
+        window.top.location.replace('{{ play_store_url }}');
+      }
+    })();
+  </script>
 </head>
 <body>
   <div class="card">
