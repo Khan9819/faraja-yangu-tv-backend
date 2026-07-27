@@ -1,8 +1,9 @@
 from django.contrib import admin
 from django.urls import path, include
-from django.http import JsonResponse
+from django.http import JsonResponse, Http404
 from django.shortcuts import render, get_object_or_404
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from rest_framework.decorators import api_view
 from rest_framework.permissions import AllowAny
 from core.response_wrapper import success_response
@@ -29,10 +30,16 @@ def public_categories_with_cover(request):
 
 def video_og_page(request, uid):
     from apps.streaming.models import Video
-    video = get_object_or_404(Video, uid=uid, is_published=True)
+    try:
+        video = get_object_or_404(Video, uid=uid, is_published=True)
+    except ValidationError:
+        raise Http404('Invalid video UID')
     og_image = ''
     if video.thumbnail:
-        og_image = video.thumbnail.url  # full R2 URL
+        try:
+            og_image = video.thumbnail.url
+        except Exception:
+            og_image = ''
     description = (video.description[:280] + '…') if len(video.description) > 280 else video.description
     og_url = request.build_absolute_uri()
     return render(request, 'streaming/video_og.html', {
