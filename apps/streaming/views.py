@@ -1609,7 +1609,7 @@ def view(request, video_id):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def interceptor_ads(request, video_uid):
     """Return all interceptor ads for the given video uid.
 

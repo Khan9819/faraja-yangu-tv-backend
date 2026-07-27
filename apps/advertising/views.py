@@ -2,7 +2,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from apps.authentication.services.credit import UserCreditService
 from core.response_wrapper import success_response, error_response
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from apps.advertising.models import Ad
 from apps.advertising.serializers import AdSerializer, ClaimRewardSerializer
 from django.core.cache import cache
@@ -23,7 +23,7 @@ AD_CLICK_BONUS = 10  # Bonus credits for clicking an ad
 # Create your views here.
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def get_carousel_ads(request):
     """Return up to 4 published carousel ads, optionally filtered by ad_render_type.
 
