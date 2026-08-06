@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('streaming', '0025_add_portrait_cover'),
+        ('streaming', '0025_remove_videoadslot_categories_video_download_path'),
     ]
 
     operations = [
