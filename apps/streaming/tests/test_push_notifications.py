@@ -277,7 +277,9 @@ class TestSendPushNotification:
         """Test that devices without FCM tokens are skipped."""
         mock_send.return_value = "message_id_123"
         
-        self.device1.fcm_token = None
+        # fcm_token is a non-null TextField, so an empty token is the
+        # "no token" representation.
+        self.device1.fcm_token = ''
         self.device1.save()
         
         send_push_notification(
@@ -363,6 +365,59 @@ class TestSendPushNotification:
         for call_item in calls:
             assert call_item[1]['data'] == metadata
     
+    @patch('apps.streaming.tasks.tasks._send_notification')
+    def test_duplicate_token_sent_once(self, mock_send):
+        """Test that the same fcm_token is never sent twice, even if linked
+        to multiple device rows / users (accumulated stale rows)."""
+        mock_send.return_value = "message_id_123"
+
+        # client_user1 accumulates a second row with the SAME token as client_user2.
+        duplicate = Devices.objects.create(
+            device_os="Android",
+            device_id="device_dup",
+            device_type="mobile",
+            app_version="1.0.0",
+            fcm_token="fcm_token_client2",
+            is_active=True
+        )
+        self.client_user1.devices.add(duplicate)
+
+        send_push_notification(
+            target=UserGroupTypes.CLIENTS,
+            notification_type=NotificationTypes.NEW_VIDEO,
+            title="Test",
+            message="Test message",
+            metadata=None
+        )
+
+        # client1 has 2 active rows (fcm_token_client1 + fcm_token_client2),
+        # client2 has 1 (fcm_token_client2) -> only 2 UNIQUE tokens.
+        assert mock_send.call_count == 2
+        # Each in-app notification is still created per user.
+        assert Notification.objects.count() == 2
+
+    @patch('apps.streaming.tasks.tasks._send_notification')
+    def test_unregistered_token_deactivates_device(self, mock_send):
+        """Test that a False result (UnregisteredError) deactivates the row
+        so it is skipped on the next notification run."""
+        mock_send.return_value = False
+
+        send_push_notification(
+            target=UserGroupTypes.CLIENTS,
+            notification_type=NotificationTypes.NEW_VIDEO,
+            title="Test",
+            message="Test message",
+            metadata=None
+        )
+
+        assert mock_send.call_count == 2
+        self.device1.refresh_from_db()
+        self.device2.refresh_from_db()
+        assert self.device1.is_active is False
+        assert self.device2.is_active is False
+        # In-app notifications are still created.
+        assert Notification.objects.count() == 2
+
     @patch('apps.streaming.tasks.tasks._send_notification')
     def test_real_world_scenario_video_upload_complete(self, mock_send):
         """Test the exact scenario from convert_video_to_hls task."""

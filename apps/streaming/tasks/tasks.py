@@ -188,17 +188,49 @@ def _send_notification(fcm_token: str, title: str, body: str, data: dict = None)
         logger.info(f"Successfully sent notification: {response}")
         return response
     except messaging.UnregisteredError:
+        # Distinct value (False) so callers can deactivate the stale device row.
         logger.warning("FCM token is unregistered")
+        return False
     except messaging.InvalidArgumentError as e:
         logger.error(f"Invalid argument: {e}")
+        return None
     except Exception as e:
         logger.error(f"Failed to send notification: {e}")
         return None
 
-    
+
+def _video_notification_image(video) -> str:
+    """Best available image URL for a video's rich push notification.
+
+    Falls back down the chain (thumbnail -> portrait_cover -> tv_poster ->
+    tv_landscape -> category thumbnail) so notifications always carry an
+    image when ANY cover is set — otherwise the app shows a plain
+    text-only notification ("notification without image").
+    """
+    for field in ('thumbnail', 'portrait_cover', 'tv_poster', 'tv_landscape'):
+        image_field = getattr(video, field, None)
+        if image_field:
+            try:
+                return image_field.url
+            except Exception:
+                continue
+    category = getattr(video, 'category', None)
+    if category and category.thumbnail:
+        try:
+            return category.thumbnail.url
+        except Exception:
+            pass
+    return ''
+
+
 @celery_app.task(bind=True)
 def send_push_notification(self, target: UserGroupTypes, notification_type: NotificationTypes, title: str, message: str, metadata: dict = None):
-    """Send push notifications with DB atomic dedup (SELECT FOR UPDATE)."""
+    """Send push notifications with DB atomic dedup (SELECT FOR UPDATE).
+
+    Sends at most ONE FCM message per unique device token so users with
+    accumulated/stale device rows (rotated FCM tokens, re-installs) receive
+    a single notification instead of several duplicates.
+    """
     close_old_connections()
     from django.db import transaction
     
@@ -219,9 +251,15 @@ def send_push_notification(self, target: UserGroupTypes, notification_type: Noti
         except Exception as e:
             logger.error(f"DB idempotency failed for {video_id}: {e}")
     
+    # Sensible default titles when none supplied (empty-title notifications
+    # render as blank alerts on devices).
+    if not title:
+        title = "New Video Uploaded" if notification_type == NotificationTypes.NEW_VIDEO else "You have a new comment reply"
+
     get_users = _get_users(target)
     sent_count = 0
     failed_count = 0
+    seen_tokens = set()  # One send per physical device, never per device row
     
     print("Notification sent to: ", get_users)
     
@@ -230,14 +268,19 @@ def send_push_notification(self, target: UserGroupTypes, notification_type: Noti
         user_message = message.replace("--username--", user.username)
         print(user_message)
         for device in devices:
-            print(device.fcm_token)
-            if device.fcm_token:
-                result = _send_notification(device.fcm_token, title, user_message, data=metadata)
-                if result:
-                    sent_count += 1
-                else:
-                    failed_count += 1
-                logger.debug(f"Push notification sent: {user.username} | {device.fcm_token}")
+            token = (device.fcm_token or '').strip()
+            if not token or token in seen_tokens:
+                continue
+            seen_tokens.add(token)
+            result = _send_notification(token, title, user_message, data=metadata)
+            if result:
+                sent_count += 1
+            else:
+                failed_count += 1
+                if result is False:  # UnregisteredError -> deactivate ALL rows
+                    # holding this dead token (incl. duplicates on other users).
+                    Devices.objects.filter(fcm_token=token).update(is_active=False)
+            logger.debug(f"Push notification sent: {user.username} | {token}")
         
         # Create in-app notification record
         notification_kwargs = {
@@ -272,13 +315,13 @@ def notify_user_of_reply(self, commenter_user_id: int, replier_name: str, commen
     title = f'{replier_name} replied to your comment'
     body = comment_text[:120]
 
-    # Attach the video thumbnail so the app renders the same rich (image)
+    # Attach the video cover so the app renders the same rich (image)
     # notification style used for new-video notifications.
     thumbnail_url = ''
     try:
         v = Video.objects.filter(uid=video_uid).first()
-        if v and v.thumbnail:
-            thumbnail_url = v.thumbnail.url
+        if v:
+            thumbnail_url = _video_notification_image(v)
     except Exception:
         thumbnail_url = ''
 
@@ -290,11 +333,18 @@ def notify_user_of_reply(self, commenter_user_id: int, replier_name: str, commen
     }
 
     sent = 0
+    seen_tokens = set()  # One send per physical device, never per device row
     for device in user.devices.filter(is_active=True):
-        if device.fcm_token:
-            result = _send_notification(device.fcm_token, title, body, data=metadata)
-            if result:
-                sent += 1
+        token = (device.fcm_token or '').strip()
+        if not token or token in seen_tokens:
+            continue
+        seen_tokens.add(token)
+        result = _send_notification(token, title, body, data=metadata)
+        if result:
+            sent += 1
+        elif result is False:  # UnregisteredError -> deactivate ALL rows
+            # holding this dead token (incl. duplicates on other users).
+            Devices.objects.filter(fcm_token=token).update(is_active=False)
 
     # In-app notification
     Notification.objects.create(
@@ -630,12 +680,9 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
         category_name = getattr(video.category, 'name', 'Uncategorized') if video.category else 'Uncategorized'
         
         # Build enriched metadata for deep-link support
-        thumbnail_url = ''
-        if video.thumbnail:
-            try:
-                thumbnail_url = video.thumbnail.url
-            except Exception:
-                thumbnail_url = ''
+        # Fall back through portrait_cover / tv_poster / category thumbnail so
+        # the notification always carries an image when any cover exists.
+        thumbnail_url = _video_notification_image(video)
         
         notification_metadata = {
             'type': 'video_upload',
