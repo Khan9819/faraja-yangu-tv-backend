@@ -1,8 +1,22 @@
 from django.db import models
 from apps.common.models import TimeStampedModel
 from core.base_model import BaseModel
+from uuid import uuid4
 
 # Create your models here.
+
+
+def video_image_upload_path(instance, filename):
+    """Return a unique storage key for a video cover image.
+
+    Every video cover (thumbnail, tv_poster, tv_landscape, tv_square,
+    portrait_cover) is saved under a random UUID filename, so two different
+    videos can NEVER overwrite or share the same object-storage file — even
+    when the CMS uploads two files with the same original name (cover.jpg).
+    """
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'jpg'
+    uid = getattr(instance, 'uid', None) or uuid4()
+    return f'videos/{uid}/{uuid4().hex}.{ext}'
 
 class Category(BaseModel):
     name = models.CharField(max_length=255)
@@ -39,7 +53,7 @@ class Video(BaseModel):
     title = models.CharField(max_length=255)
     description = models.TextField()
     slug = models.SlugField(unique=True, null=True, blank=True)
-    thumbnail = models.ImageField(upload_to='videos', max_length=500, null=True, blank=True)
+    thumbnail = models.ImageField(upload_to=video_image_upload_path, max_length=500, null=True, blank=True)
     category = models.ForeignKey(Category, related_name='videos', on_delete=models.CASCADE, null=True, blank=True )
     
     # Original uploaded video (will be deleted after HLS conversion)
@@ -95,13 +109,13 @@ class Video(BaseModel):
                                                help_text='Number of conversion retry attempts')
     
     duration = models.DurationField(null=True, blank=True)
-    tv_poster = models.ImageField(upload_to='videos/tv', max_length=500, null=True, blank=True,
+    tv_poster = models.ImageField(upload_to=video_image_upload_path, max_length=500, null=True, blank=True,
                                   help_text='TV poster image (540x720 recommended)')
-    tv_landscape = models.ImageField(upload_to='videos/tv', max_length=500, null=True, blank=True,
+    tv_landscape = models.ImageField(upload_to=video_image_upload_path, max_length=500, null=True, blank=True,
                                      help_text='TV landscape/banner image (1280x720 recommended)')
-    tv_square = models.ImageField(upload_to='videos/tv', max_length=500, null=True, blank=True,
+    tv_square = models.ImageField(upload_to=video_image_upload_path, max_length=500, null=True, blank=True,
                                   help_text='TV square image (540x540 recommended)')
-    portrait_cover = models.ImageField(upload_to='videos/portrait', max_length=500, null=True, blank=True,
+    portrait_cover = models.ImageField(upload_to=video_image_upload_path, max_length=500, null=True, blank=True,
                                        help_text='Portrait cover image for mobile app (1080x1350 recommended)')
     upload_token = models.CharField(max_length=255, null=True, blank=True, help_text='Long-lived upload session token')
     upload_token_expiry = models.DateTimeField(null=True, blank=True, help_text='Expiry of upload token')
