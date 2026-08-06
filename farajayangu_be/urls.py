@@ -79,12 +79,14 @@ urlpatterns = [
     path('website-posts/', public_website_posts, name='public-website-posts'),
     path('categories-with-cover/', public_categories_with_cover, name='public-categories-with-cover'),
 
-    path('api/authentication/', include('apps.authentication.urls')),
-    path('api/streaming/', include('apps.streaming.urls')),
-    path('api/advertising/', include('apps.advertising.urls')),
-    path('api/analytics/', include('apps.analytics.urls')),
-    path('api/profile/', include('apps.profile.urls')),
-    path('api/management/', include('apps.management.urls')),
+    # API variants get their own unique instance namespace so they don't
+    # collide with the non-API includes above (fixes urls.W005).
+    path('api/authentication/', include(('apps.authentication.urls', 'authentication'), namespace='api-authentication')),
+    path('api/streaming/', include(('apps.streaming.urls', 'streaming'), namespace='api-streaming')),
+    path('api/advertising/', include(('apps.advertising.urls', 'advertising'), namespace='api-advertising')),
+    path('api/analytics/', include(('apps.analytics.urls', 'analytics'), namespace='api-analytics')),
+    path('api/profile/', include(('apps.profile.urls', 'profile'), namespace='api-profile')),
+    path('api/management/', include(('apps.management.urls', 'management'), namespace='api-management')),
     path('api/website-posts/', public_website_posts, name='api-public-website-posts'),
     path('api/categories-with-cover/', public_categories_with_cover, name='api-public-categories-with-cover'),
 ]

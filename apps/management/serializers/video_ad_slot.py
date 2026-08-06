@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from apps.streaming.models import Video, VideoAdSlot
+from apps.streaming.models import Video, VideoAdSlot, Category
 
 
 class VideoNestedSerializer(serializers.ModelSerializer):
@@ -19,11 +19,19 @@ class VideoNestedSerializer(serializers.ModelSerializer):
         return None
 
 
+class CategoryNestedSerializer(serializers.ModelSerializer):
+    """Lightweight nested serializer for Category in interceptor ads."""
+    class Meta:
+        model = Category
+        fields = ['id', 'name']
+
+
 class VideoAdSlotSerializer(serializers.ModelSerializer):
     """Serializer for VideoAdSlot model (list/detail response)."""
     
     video = VideoNestedSerializer(read_only=True)
     content_video = VideoNestedSerializer(read_only=True)
+    categories = CategoryNestedSerializer(many=True, read_only=True)
     media_file_url = serializers.SerializerMethodField()
     
     class Meta:
@@ -33,6 +41,7 @@ class VideoAdSlotSerializer(serializers.ModelSerializer):
             'video',
             'ad',
             'content_video',
+            'categories',
             'title',
             'is_active',
             'description',
@@ -59,6 +68,15 @@ class VideoAdSlotSerializer(serializers.ModelSerializer):
 class VideoAdSlotCreateSerializer(serializers.ModelSerializer):
     """Serializer for creating VideoAdSlot with support for self-contained interceptor ads."""
     
+    # Category targeting. Uses a CharField list so that multipart/form-data
+    # entries (strings) and empty selections ("") are handled gracefully.
+    # validate_categories coerces to ints and re-checks existence.
+    categories = serializers.ListField(
+        child=serializers.CharField(allow_blank=True),
+        required=False,
+        help_text='List of category IDs to target. Empty = All Videos (global).'
+    )
+    
     class Meta:
         model = VideoAdSlot
         fields = [
@@ -66,6 +84,7 @@ class VideoAdSlotCreateSerializer(serializers.ModelSerializer):
             'video',
             'ad',
             'content_video',
+            'categories',
             'title',
             'description',
             'is_active',
@@ -142,6 +161,48 @@ class VideoAdSlotCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('Content video does not exist.')
         return value
     
+    def validate_categories(self, value):
+        """Clean and validate category IDs from multipart forms.
+
+        Browsers/axios may send empty string entries when no categories are
+        selected ("All Videos" case). Empty selections are stored as an empty
+        ManyToMany relation instead of failing a pk lookup.
+        """
+        if value is None:
+            return value
+        cleaned = []
+        for item in value:
+            if item in (None, ''):
+                continue
+            try:
+                cleaned.append(int(item))
+            except (TypeError, ValueError):
+                raise serializers.ValidationError(
+                    {'categories': f'Invalid category ID: {item}'}
+                )
+        if cleaned:
+            found_ids = set(Category.objects.filter(id__in=cleaned).values_list('id', flat=True))
+            missing = [cid for cid in cleaned if cid not in found_ids]
+            if missing:
+                raise serializers.ValidationError(
+                    {'categories': f'Categories do not exist: {missing}'}
+                )
+        return cleaned
+
+    def create(self, validated_data):
+        categories = validated_data.pop('categories', None)
+        instance = super().create(validated_data)
+        if categories is not None:
+            instance.categories.set(categories)
+        return instance
+
+    def update(self, instance, validated_data):
+        categories = validated_data.pop('categories', None)
+        instance = super().update(instance, validated_data)
+        if categories is not None:
+            instance.categories.set(categories)
+        return instance
+
     def validate_media_file(self, value):
         """Validate media file type and size."""
         if value:

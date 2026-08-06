@@ -153,17 +153,15 @@ def _send_notification(fcm_token: str, title: str, body: str, data: dict = None)
     string_data['title'] = title
     string_data['body'] = body
     
+    # Data-only message on Android: the Flutter app renders ONE rich notification
+    # (with the cover image) via firebase_messaging_background_handler.
+    # If we also sent a `notification` block, Android would show a second plain
+    # notification (no image) on top of the app's rich one -> duplicates.
     android_config = messaging.AndroidConfig(
         priority='high',
-        notification=messaging.AndroidNotification(
-            title=title,
-            body=body,
-            sound='faraja_notification',
-            channel_id='video_upload_channel',
-            color='#E7792A',
-        ),
     )
     
+    # iOS keeps a real APNS alert so notifications still display reliably.
     apns_config = messaging.APNSConfig(
         payload=messaging.APNSPayload(
             aps=messaging.Aps(
@@ -179,7 +177,6 @@ def _send_notification(fcm_token: str, title: str, body: str, data: dict = None)
     )
     
     message = messaging.Message(
-        notification=messaging.Notification(title=title, body=body),
         data=string_data,
         token=fcm_token,
         android=android_config,
@@ -275,10 +272,21 @@ def notify_user_of_reply(self, commenter_user_id: int, replier_name: str, commen
     title = f'{replier_name} replied to your comment'
     body = comment_text[:120]
 
+    # Attach the video thumbnail so the app renders the same rich (image)
+    # notification style used for new-video notifications.
+    thumbnail_url = ''
+    try:
+        v = Video.objects.filter(uid=video_uid).first()
+        if v and v.thumbnail:
+            thumbnail_url = v.thumbnail.url
+    except Exception:
+        thumbnail_url = ''
+
     metadata = {
         'type': 'comment_reply',
         'video_id': str(video_uid),
         'video_title': video_title,
+        'video_thumbnail': thumbnail_url,
     }
 
     sent = 0

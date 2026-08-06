@@ -68,10 +68,12 @@ class VideoLightSerializer(serializers.ModelSerializer):
             'tv_poster',
             'tv_landscape',
             'tv_square',
+            'portrait_cover',
             'duration',
             'views_count',
             'likes_count',
             'dislikes_count',
+            'is_ad_media',
         ]
 
 class VideoFeedSerializer(serializers.ModelSerializer):
@@ -99,10 +101,12 @@ class VideoFeedSerializer(serializers.ModelSerializer):
             'tv_poster',
             'tv_landscape',
             'tv_square',
+            'portrait_cover',
             'duration',
             'views_count',
             'likes_count',
             'dislikes_count',
+            'is_ad_media',
             'category_id',
             'category_name',
             'parent_category_id',

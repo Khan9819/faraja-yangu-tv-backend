@@ -29,10 +29,11 @@ class CategorySerializer(serializers.ModelSerializer):
             return Video.objects.filter(
                 is_published=True,
                 processing_status='completed',
+                is_ad_media=False,
                 category__in=obj.subcategories.values_list('id', flat=True)
             ).count()
         
-        return obj.videos.filter(is_published=True, processing_status='completed').count()
+        return obj.videos.filter(is_published=True, processing_status='completed', is_ad_media=False).count()
     
     def get_category_count(self, obj):
         if obj.parent_id is None:
@@ -51,7 +52,8 @@ class CategorySerializer(serializers.ModelSerializer):
         # Get most viewed published videos, limited by video_count
         most_viewed = obj.videos.filter(
             processing_status='completed',
-            is_published=True
+            is_published=True,
+            is_ad_media=False
         ).order_by('-views_count')[:self.video_limit]
         
         return VideoLightSerializer(most_viewed, many=True).data

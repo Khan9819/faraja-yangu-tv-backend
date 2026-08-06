@@ -54,15 +54,31 @@ Interceptor ads (VideoAdSlots) define time slots within videos where ad breaks s
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| video | integer | Yes | ID of the video (from `/streaming/create-video/` or existing) |
+| video | integer | No | ID of a specific video this ad is pinned to. **Omit for "All Videos" (global)** |
+| categories | integer[] | No | Category IDs to target. **Omit / send empty for "All Videos" (global)**. Applies to videos in the selected categories (including their subcategories) |
 | start_time | string | Yes | When ad slot starts (format: `HH:MM:SS`) |
 | end_time | string | Yes | When ad slot ends (format: `HH:MM:SS`) |
 
-#### Example Request
+**Targeting rules:**
+- `video` set → ad shows only on that video.
+- `video` empty + no `categories` → ad shows on **all videos** (global).
+- `video` empty + `categories` set → ad shows on videos whose category (or parent category) is in the list.
+- For multipart/form-data, send each category id as a repeated `categories` field (e.g. `categories=1&categories=2`), or a single empty `categories` value to clear targeting.
+
+#### Example Request (global)
 
 ```json
 {
-  "video": 10,
+  "start_time": "00:05:00",
+  "end_time": "00:05:30"
+}
+```
+
+#### Example Request (category targeted)
+
+```json
+{
+  "categories": [3, 7],
   "start_time": "00:05:00",
   "end_time": "00:05:30"
 }
@@ -187,8 +203,9 @@ Redirect to list page
 |-------|------|-------------|
 | id | AutoField | Primary key |
 | uid | UUIDField | Unique identifier (from BaseModel) |
-| video | ForeignKey | Reference to Video model |
+| video | ForeignKey | Reference to a specific Video (nullable = global/All Videos) |
 | ad | ForeignKey | Optional reference to Ad model |
+| categories | ManyToManyField | Target categories (empty = All Videos). Matching includes subcategories of selected parents |
 | start_time | TimeField | When the ad break should start |
 | end_time | TimeField | When the ad break should end |
 | created_at | DateTimeField | Creation timestamp |

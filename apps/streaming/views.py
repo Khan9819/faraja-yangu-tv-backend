@@ -248,7 +248,7 @@ def get_category(request, pk):
 @permission_classes([IsAuthenticated])
 def get_category_videos(request, pk):
     category = Category.objects.get(pk=pk)
-    videos = Video.objects.filter(category=category, is_published=True, processing_status='completed')
+    videos = Video.objects.filter(category=category, is_published=True, processing_status='completed', is_ad_media=False)
     serializer = VideoSerializer(videos, many=True)
     return success_response(serializer.data)
 
@@ -289,7 +289,7 @@ def get_feed(request):
             return success_response(cached_response)
     
     # Prefetch category and its parent to avoid N+1 queries
-    queryset = Video.objects.filter(is_published=True, processing_status='completed').select_related('category', 'category__parent').all().order_by('-created_at')
+    queryset = Video.objects.filter(is_published=True, processing_status='completed', is_ad_media=False).select_related('category', 'category__parent').all().order_by('-created_at')
 
     paginator = Paginator(queryset, page_size)
 
@@ -319,6 +319,7 @@ def get_feed(request):
         # Try to use a custom ad if available
         custom_ad = Ad.objects.filter(is_published=True).first()
         if custom_ad:
+            is_video = custom_ad.type == Ad.AD_TYPES.VIDEO and bool(custom_ad.video)
             ad_segment = {
                 'segment_type': 'AD',
                 'ad_render_type': 'CUSTOM',  # frontend: render custom ad
@@ -327,8 +328,15 @@ def get_feed(request):
                     'name': custom_ad.name,
                     'slug': custom_ad.slug,
                     'type': custom_ad.type,
+                    # Fields the Flutter in-feed ad box renders directly:
+                    # VIDEO ads play a muted looping box, IMAGE ads show a
+                    # clickable cover — both fall back to network banners.
+                    'media_type': 'VIDEO' if is_video else 'IMAGE',
+                    'video_url': custom_ad.video.url if is_video else None,
+                    'image_url': custom_ad.thumbnail.url if custom_ad.thumbnail else None,
                     'thumbnail': custom_ad.thumbnail.url if custom_ad.thumbnail else None,
-                    'video': custom_ad.video.url if custom_ad.video else None,
+                    'click_url': custom_ad.redirect_link,
+                    'redirect_link': custom_ad.redirect_link,
                     'duration': custom_ad.duration.total_seconds() if custom_ad.duration else None,
                 },
             }
@@ -647,9 +655,11 @@ def mark_video_downloaded(request, video_uid):
             cache.set(cache_key, data, timeout=300)
         return success_response(data=data, message='Already downloaded')
 
-    # Credit sufficiency check
+    # Credit sufficiency check — higher download qualities cost extra.
+    quality = (request.data.get('quality') or '480p').lower()
+    quality_premium = {'720p': 20, '1080p': 40}.get(quality, 0)
     credit_service = UserCreditService(request.user)
-    cost = UserCreditService.DEDUCT_FROM_DOWNLOAD
+    cost = UserCreditService.DEDUCT_FROM_DOWNLOAD + quality_premium
     if not credit_service.is_credit_sufficient(cost):
         current = credit_service.get_balance()
         return error_response(
@@ -746,7 +756,7 @@ def search_videos(request):
 
     queryset = (
         Video.objects
-        .filter(is_published=True, processing_status='completed')
+        .filter(is_published=True, processing_status='completed', is_ad_media=False)
         .select_related('category', 'category__parent')
         .filter(
             Q(title__icontains=query)
@@ -1536,7 +1546,7 @@ def delete_video(request, pk):
 
 @api_view(['GET'])
 def get_all_videos(request):
-    feed = Video.objects.all()
+    feed = Video.objects.exclude(is_ad_media=True)
     category_id = request.query_params.get('category')
     if category_id:
         feed = feed.filter(category_id=category_id)
@@ -1624,23 +1634,52 @@ def interceptor_ads(request, video_uid):
     - data == [] if there are no ads to show
     """
 
-    # Ensure video exists
-    video = get_object_or_404(Video, uid=video_uid)
+    # Ensure video exists. The uid column is a UUID field, so invalid strings
+    # must be caught and turned into a 404 instead of a 500.
+    from django.core.exceptions import ValidationError as DjangoValidationError
+    try:
+        video = Video.objects.select_related('category__parent').get(uid=video_uid)
+    except (Video.DoesNotExist, DjangoValidationError, ValueError):
+        raise Http404
 
     # Optional future-proof position hint ("pre" | "mid" | "post")
     position = request.GET.get('position')  # noqa: F841  # currently unused
 
-    # Get all ad slots for this video (both linked and self-contained)
+    # Gather the video's own category plus its parent (so ads targeting a
+    # parent category also match videos inside its subcategories).
+    video_category_ids = set()
+    if video.category_id:
+        video_category_ids.add(video.category_id)
+        if video.category.parent_id:
+            video_category_ids.add(video.category.parent_id)
+
+    # Get ad slots for this video: slots pinned to this specific video OR
+    # global slots (video = null) that target "All Videos".
     slots = (
         VideoAdSlot.objects
         .select_related('ad', 'content_video')
-        .filter(video=video)
+        .prefetch_related('categories')
+        .filter(Q(video=video) | Q(video__isnull=True))
         .order_by('start_time')
     )
 
+    valid_slots = []
+    for slot in slots:
+        # 1. Slot pinned to this exact video — always applies.
+        if slot.video_id == video.id:
+            valid_slots.append(slot)
+            continue
+
+        # 2. Global slot (All Videos): apply category targeting if any.
+        #    No categories set = global ad that applies to every video.
+        #    Categories set = must overlap with the video's category (or its parent).
+        slot_category_ids = {c.id for c in slot.categories.all()}
+        if not slot_category_ids or (slot_category_ids & video_category_ids):
+            valid_slots.append(slot)
+
     # Filter: include slots with published ad, self-contained media, or HLS content video
     valid_slots = [
-        slot for slot in slots
+        slot for slot in valid_slots
         if (slot.ad and slot.ad.is_published) or slot.media_file or slot.content_video
     ]
 
@@ -1744,7 +1783,7 @@ def get_related_videos(request, video_uid):
     qs = (
         Video.objects
         .select_related('category', 'category__parent')
-        .filter(category=video.category, is_published=True, processing_status='completed')
+        .filter(category=video.category, is_published=True, processing_status='completed', is_ad_media=False)
         .exclude(id=video.id)
         .order_by('-created_at')[:20]
     )

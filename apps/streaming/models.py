@@ -101,6 +101,8 @@ class Video(BaseModel):
                                      help_text='TV landscape/banner image (1280x720 recommended)')
     tv_square = models.ImageField(upload_to='videos/tv', max_length=500, null=True, blank=True,
                                   help_text='TV square image (540x540 recommended)')
+    portrait_cover = models.ImageField(upload_to='videos/portrait', max_length=500, null=True, blank=True,
+                                       help_text='Portrait cover image for mobile app (1080x1350 recommended)')
     upload_token = models.CharField(max_length=255, null=True, blank=True, help_text='Long-lived upload session token')
     upload_token_expiry = models.DateTimeField(null=True, blank=True, help_text='Expiry of upload token')
     uploaded_by = models.ForeignKey('authentication.User', related_name='videos', on_delete=models.CASCADE)
@@ -110,6 +112,8 @@ class Video(BaseModel):
     is_published = models.BooleanField(default=False)
     is_live = models.BooleanField(default=False)
     notification_sent = models.BooleanField(default=False, help_text='Whether push notification has been sent for this video')
+    is_ad_media = models.BooleanField(default=False,
+                                      help_text='True when this video record is media for an ad (interceptor etc). Excluded from content lists.')
     
     def __str__(self):
         return self.title
@@ -218,6 +222,14 @@ class VideoAdSlot(BaseModel):
     )
     
     is_active = models.BooleanField(default=True)
+    
+    # Category targeting: leave empty for ALL videos (global), otherwise
+    # the ad only appears on videos belonging to (or nested under) these categories.
+    categories = models.ManyToManyField(
+        Category,
+        related_name='ad_slots',
+        blank=True,
+    )
     
     # Self-contained interceptor ad fields
     title = models.CharField(max_length=255, null=True, blank=True)
