@@ -29,6 +29,20 @@ logger = logging.getLogger(__name__)
 
 STALL_TIMEOUT_SECONDS = 300
 
+# --------------------------------------------------------------------------- #
+# Pipeline progress bands (0-100).
+# Every stage continues from where the previous one ended so the displayed
+# percentage NEVER goes backwards:
+#     download 0-10 -> assembly 10-88 -> conversion 88-98 -> upload 98-100
+#
+# Tasks that emit progress (assemble_chunks_task, convert_video_to_hls) import
+# these constants so the bands stay aligned across files.
+# --------------------------------------------------------------------------- #
+CONVERSION_START = 88          # conversion picks up here (after assembly)
+CONVERSION_END = 98            # conversion finishes here (upload takes over)
+UPLOAD_NEAR_DONE = 99          # final step before completion (100 sent by complete)
+
+
 class FFmpegStalledError(Exception):
     pass
 
@@ -337,6 +351,9 @@ class VideoProcessor:
                     if variant_height > self._source_height:
                         logger.info(f"Skipping {variant_name} (source is {self._source_height}p, skip-upscaling enabled)")
                         skipped_variants.append(variant_name)
+                        # Remove from progress tracking so the overall average
+                        # only counts variants that are actually processed.
+                        self._variant_progress.pop(variant_name, None)
                         continue
                 
                 # Check if variant already exists
@@ -677,10 +694,18 @@ class VideoProcessor:
         self._variant_progress[variant_name].message = message
         self._variant_progress[variant_name].status = status
         
-        # Calculate overall progress (20-70% range for conversion)
+        # Overall progress continues the pipeline from where assembly left off
+        # (assembly ends at CONVERSION_START, so conversion maps variant
+        # progress 0-100 onto the CONVERSION_START..CONVERSION_END band).
+        # This keeps the number monotonic across stages.
         total_progress = sum(vp.progress for vp in self._variant_progress.values())
-        avg_progress = total_progress / len(self._variant_progress)
-        overall_progress = int(20 + (avg_progress * 0.5))  # Map 0-100 to 20-70
+        num_variants = len(self._variant_progress)
+        if num_variants == 0:
+            overall_progress = CONVERSION_END  # No active variants (all skipped)
+        else:
+            avg_progress = total_progress / num_variants
+            band = CONVERSION_END - CONVERSION_START
+            overall_progress = int(CONVERSION_START + (avg_progress * (band / 100)))
         
         # Send consolidated update via variant_progress_callback
         if self.variant_progress_callback:

@@ -12,7 +12,12 @@ from django.conf import settings
 from django.core.files.storage import default_storage
 from apps.analytics.models import Notification
 from apps.streaming.models import Video
-from apps.streaming.services.video_processor import VideoProcessor
+from apps.streaming.services.video_processor import (
+    VideoProcessor,
+    CONVERSION_START,
+    CONVERSION_END,
+    UPLOAD_NEAR_DONE,
+)
 from farajayangu_be.celery import app as celery_app
 from apps.authentication.models import Devices, User
 from apps.authentication.models import Role
@@ -424,7 +429,12 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
             return {'success': True, 'video_id': video_id, 'hls_path': video.hls_path, 'already_complete': True}
         
         video.processing_status = 'processing'
-        video.save(update_fields=['processing_status'])
+        # Fresh run (no checkpoint and not a celery retry): reset the monotonic
+        # progress floor so a re-conversion of an already-processed video doesn't
+        # get stuck at the old (e.g. 100%) percentage. Resumes keep the floor.
+        if not checkpoint and self.request.retries == 0:
+            video.processing_progress = 0
+        video.save(update_fields=['processing_status', 'processing_progress'])
         
         temp_dir = tempfile.gettempdir()
         hls_output_dir = f"videos/hls/{video.uid}"  # Remote path in R2
@@ -435,7 +445,7 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
         if local_video_path and os.path.exists(local_video_path):
             video_file_path = local_video_path
             logger.info(f"Using local video file: {video_file_path}")
-            send_video_progress(video_id, "converting", 15, "Using local video file, starting conversion...",
+            send_video_progress(video_id, "converting", CONVERSION_START, "Using local video file, starting conversion...",
                                checkpoint={'stage': 'converting'})
             stage = 'converting'  # Skip download stage
         else:
@@ -486,7 +496,7 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
             else:
                 logger.info(f"Resuming: video already downloaded for {video_id}")
             
-            send_video_progress(video_id, "converting", 15, "Video downloaded, starting conversion...",
+            send_video_progress(video_id, "converting", 10, "Video downloaded, starting conversion...",
                                checkpoint={'stage': 'converting'})
         
         # Stage 2: Convert to HLS (skip if already converted)
@@ -554,14 +564,14 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
                     variant_progress_callback=variant_progress_callback
                 )
                 
-                send_video_progress(video_id, "converting", 20, "Starting HLS conversion...",
+                send_video_progress(video_id, "converting", CONVERSION_START, "Starting HLS conversion...",
                                    checkpoint={'stage': 'converting', 'completed_variants': completed_variants})
                 
                 # Resume from last completed variant if retrying
                 resume_from = completed_variants[-1] if completed_variants else None
                 if resume_from:
                     logger.info(f"Resuming conversion from variant: {resume_from}")
-                    send_video_progress(video_id, "converting", 20, f"Resuming from {resume_from}...",
+                    send_video_progress(video_id, "converting", CONVERSION_START, f"Resuming from {resume_from}...",
                                        checkpoint={'stage': 'converting', 'completed_variants': completed_variants})
                 
                 conversion_result = processor.convert_to_hls(resume_from_variant=resume_from)
@@ -573,7 +583,7 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
                 # Get duration from existing files
                 conversion_result = {'success': True, 'duration': 0}  # Duration will be recalculated if needed
             
-            send_video_progress(video_id, "uploading", 70, "Conversion complete, uploading HLS files...",
+            send_video_progress(video_id, "uploading", CONVERSION_END, "Conversion complete, uploading HLS files...",
                                checkpoint={'stage': 'uploading'})
         
         # Stage 3: Upload HLS files (skip if already uploaded)
@@ -584,15 +594,15 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
                 if default_storage.exists(remote_master):
                     logger.info(f"Resuming: HLS files already uploaded for {video_id}")
                     uploaded_paths = []  # Already uploaded
-                    send_video_progress(video_id, "uploading", 90, "HLS files already uploaded",
+                    send_video_progress(video_id, "uploading", UPLOAD_NEAR_DONE, "HLS files already uploaded",
                                        checkpoint={'stage': 'finalizing'})
                 else:
-                    send_video_progress(video_id, "uploading", 75, "Uploading HLS files to storage...",
+                    send_video_progress(video_id, "uploading", CONVERSION_END, "Uploading HLS files to storage...",
                                        checkpoint={'stage': 'uploading'})
                     try:
                         uploaded_paths = upload_hls_files_to_storage(local_hls_dir, hls_output_dir)
                         logger.info(f"Uploaded {len(uploaded_paths)} files to R2 storage")
-                        send_video_progress(video_id, "uploading", 90, f"Uploaded {len(uploaded_paths)} HLS files",
+                        send_video_progress(video_id, "uploading", UPLOAD_NEAR_DONE, f"Uploaded {len(uploaded_paths)} HLS files",
                                            checkpoint={'stage': 'finalizing'})
                     except Exception as upload_error:
                         logger.error(f"HLS upload failed for video {video_id}: {upload_error}")
@@ -604,12 +614,12 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
                     raise
                 # If storage check fails, try uploading anyway
                 logger.warning(f"Storage check failed, attempting upload: {e}")
-                send_video_progress(video_id, "uploading", 75, "Uploading HLS files to storage...",
+                send_video_progress(video_id, "uploading", CONVERSION_END, "Uploading HLS files to storage...",
                                    checkpoint={'stage': 'uploading'})
                 try:
                     uploaded_paths = upload_hls_files_to_storage(local_hls_dir, hls_output_dir)
                     logger.info(f"Uploaded {len(uploaded_paths)} files to R2 storage")
-                    send_video_progress(video_id, "uploading", 90, f"Uploaded {len(uploaded_paths)} HLS files",
+                    send_video_progress(video_id, "uploading", UPLOAD_NEAR_DONE, f"Uploaded {len(uploaded_paths)} HLS files",
                                        checkpoint={'stage': 'finalizing'})
                 except Exception as upload_error:
                     logger.error(f"HLS upload failed for video {video_id}: {upload_error}")
@@ -617,7 +627,7 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
                     raise
         
         # Stage 4: Finalize
-        send_video_progress(video_id, "uploading", 95, "Finalizing video processing...",
+        send_video_progress(video_id, "uploading", UPLOAD_NEAR_DONE, "Finalizing video processing...",
                            checkpoint={'stage': 'finalizing'})
         
         # Verify master playlist exists on R2 before marking complete
@@ -992,7 +1002,7 @@ def assemble_chunks_task(self, video_id: int, filename: str):
         # If assembly was completed and local file exists, skip to conversion
         if stage == 'assembled' and local_video_path and os.path.exists(local_video_path):
             logger.info(f"Resuming from checkpoint: assembly already complete for video {video_id}")
-            send_video_progress(video_id, "assembling", 100, "Assembly complete, starting HLS conversion...")
+            send_video_progress(video_id, "assembling", CONVERSION_START, "Assembly complete, starting HLS conversion...")
             # Route through shared trigger (feature-flagged)
             from apps.streaming.services.conversion_client import trigger_video_processing
             trigger_video_processing(video, source_key=local_video_path)
@@ -1135,7 +1145,7 @@ def assemble_chunks_task(self, video_id: int, filename: str):
         db_queue.stop(timeout=10)
         
         logger.info(f"Successfully assembled video {video_id} at local path: {temp_assembled_path}")
-        send_video_progress(video_id, "assembling", 100, "Assembly complete, starting HLS conversion...")
+        send_video_progress(video_id, "assembling", 88, "Assembly complete, starting HLS conversion...")
         
         try:
             # Route through shared trigger (feature-flagged)
@@ -1500,6 +1510,15 @@ def import_video_from_google_drive(self, video_id: int, google_drive_url: str):
         gdrive_import.progress = 0
         gdrive_import.message = 'Downloading from Google Drive...'
         gdrive_import.save(update_fields=['status', 'progress', 'message', 'updated_at'])
+
+        # Fresh Google Drive import: clear any stale conversion state from a
+        # previous chunk-upload attempt so the monotonic progress floor can't
+        # pin the new conversion at an old percentage (or wrongly resume from
+        # completed_variants of a different source file).
+        video.processing_checkpoint = None
+        video.processing_progress = 0
+        video.processing_status = 'pending'
+        video.save(update_fields=['processing_checkpoint', 'processing_progress', 'processing_status'])
 
         # Also push a WebSocket update so the existing progress UI works
         send_video_progress(

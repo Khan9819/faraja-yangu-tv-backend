@@ -12,6 +12,12 @@ def update_video_progress_db(video_id: int, stage: str, progress: int, message: 
                               status: str = None, checkpoint: dict = None):
     """
     Persist progress state to database for resume capability and late-joining clients.
+
+    Applies a monotonic floor: within the same processing run the displayed
+    progress never goes backwards. Each pipeline stage (assembly -> conversion
+    -> upload) previously used its own percentage scale, so the number dropped
+    between stages (e.g. assembly 72% -> conversion 33%). New runs reset the
+    floor by writing processing_progress=0 when the task starts fresh.
     
     Args:
         video_id: The video ID
@@ -20,14 +26,25 @@ def update_video_progress_db(video_id: int, stage: str, progress: int, message: 
         message: Human-readable progress message
         status: Optional status update (processing, completed, failed)
         checkpoint: Optional checkpoint data for resume
+        
+    Returns:
+        The effective (floored) progress that was actually persisted.
     """
     try:
         from apps.streaming.models import Video
         
         update_fields = ['processing_stage', 'processing_progress', 'processing_message']
         video = Video.objects.get(id=video_id)
+        
+        # Monotonic floor — never move the displayed percentage backwards mid-run
+        effective_progress = progress
+        if progress is not None:
+            current_progress = video.processing_progress or 0
+            if progress < current_progress:
+                effective_progress = current_progress
+        
         video.processing_stage = stage
-        video.processing_progress = progress
+        video.processing_progress = effective_progress
         video.processing_message = message
         
         if status:
@@ -39,9 +56,11 @@ def update_video_progress_db(video_id: int, stage: str, progress: int, message: 
             update_fields.append('processing_checkpoint')
         
         video.save(update_fields=update_fields)
-        logger.debug(f"Updated DB progress for video {video_id}: {stage} - {progress}%")
+        logger.debug(f"Updated DB progress for video {video_id}: {stage} - {effective_progress}%")
+        return effective_progress
     except Exception as e:
         logger.warning(f"Could not update DB progress for video {video_id}: {str(e)}")
+        return None
 
 
 def get_video_progress(video_id: int) -> dict:
@@ -95,9 +114,13 @@ def send_video_progress(
         variants_progress: Optional dict of per-variant progress for HLS conversion
                           Format: {'1080p': {'status': 'processing', 'progress': 45, 'message': '...'}, ...}
     """
-    # Persist to database for late-joining clients and resume
+    # Persist to database for late-joining clients and resume.
+    # Use the floored value so the WebSocket payload matches the DB (never
+    # shows a lower percentage than what was already reported).
     if persist:
-        update_video_progress_db(video_id, stage, progress, message, status, checkpoint)
+        effective_progress = update_video_progress_db(video_id, stage, progress, message, status, checkpoint)
+        if effective_progress is not None:
+            progress = effective_progress
     
     try:
         channel_layer = get_channel_layer()

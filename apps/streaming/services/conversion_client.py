@@ -80,12 +80,21 @@ def publish_conversion_job(video: Video, source_key: str | None = None) -> str:
         )
         raise
 
+    # Preserve the monotonic progress floor when resuming from a checkpoint
+    # (e.g. mark_stale_conversions requeues a 72% job) so the displayed
+    # percentage doesn't drop back to 0 before the new job reports again.
+    # A genuinely fresh job (no checkpoint) starts at 0 as before.
+    if video.processing_checkpoint:
+        resumed_progress = video.processing_progress or 0
+    else:
+        resumed_progress = 0
+
     Video.objects.filter(id=video.id).update(
         conversion_job_id=job["job_id"],
         processing_backend="cpp",
         processing_status="processing",
         processing_stage="queued",
-        processing_progress=0,
+        processing_progress=resumed_progress,
         processing_message="Queued for C++ conversion",
         queued_at=timezone.now(),
         last_event_received_at=timezone.now(),

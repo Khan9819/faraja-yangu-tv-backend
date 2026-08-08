@@ -100,10 +100,18 @@ def _handle_heartbeat(video: Video) -> None:
 
 def _handle_progress(video: Video, msg: dict) -> None:
     now = timezone.now()
+    # Monotonic floor — never let the C++ raw progress (0-100) move the
+    # displayed percentage backwards within the same run (stage transitions
+    # used to restart the number, e.g. 72% -> 33%). A new job resets the
+    # floor when publish_conversion_job writes processing_progress=0.
+    new_progress = msg.get("progress") or 0
+    current_progress = video.processing_progress or 0
+    if new_progress < current_progress:
+        new_progress = current_progress
     update_fields = {
         "processing_status": "processing",
         "processing_stage": msg.get("stage") or "processing",
-        "processing_progress": msg.get("progress") or 0,
+        "processing_progress": new_progress,
         "processing_message": msg.get("message") or "Processing",
         "last_event_received_at": now,
         "last_processing_heartbeat_at": now,
@@ -122,7 +130,7 @@ def _handle_progress(video: Video, msg: dict) -> None:
     send_video_progress(
         video.id,
         msg.get("stage") or "processing",
-        msg.get("progress") or 0,
+        new_progress,
         msg.get("message") or "Processing",
         status="processing",
         variants_progress=msg.get("variants"),
