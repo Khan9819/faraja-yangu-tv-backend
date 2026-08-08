@@ -834,7 +834,16 @@ def get_chunk_upload_url(request):
                 video.upload_total_chunks = total_chunks
                 video.upload_completed_chunks = 0
                 video.upload_progress = 0
-                video.save(update_fields=['upload_total_chunks', 'upload_completed_chunks', 'upload_progress'])
+                # Fresh upload: clear any stale conversion state/checkpoint so
+                # the monotonic progress floor can't pin the new conversion at
+                # an old percentage (e.g. a re-upload of the same Video row).
+                video.processing_checkpoint = None
+                video.processing_progress = 0
+                video.processing_status = 'pending'
+                video.save(update_fields=[
+                    'upload_total_chunks', 'upload_completed_chunks', 'upload_progress',
+                    'processing_checkpoint', 'processing_progress', 'processing_status',
+                ])
                 # Initialize upload progress tracking and send WebSocket update
                 send_upload_progress(video_id, 0, total_chunks, "Upload started")
             except Video.DoesNotExist:
@@ -926,16 +935,47 @@ def get_upload_status(request):
         except Video.DoesNotExist:
             return error_response({'error': f'Video with id {video_id} not found'})
         
-        # Check which chunks exist in R2 storage
+        # Check which chunks exist in R2 storage — ONE S3 list call instead of
+        # N sequential exists() HEAD requests. The old loop crawled for large
+        # videos (hundreds of R2 round-trips) and made every resume/retry
+        # painfully slow, which users experienced as "upload inajikata".
         uploaded_chunks = []
         missing_chunks = []
-        
-        for i in range(total_chunks):
-            chunk_path = f"videos/chunks/{video_id}/chunk_{i:04d}"
-            if default_storage.exists(chunk_path):
-                uploaded_chunks.append(i)
-            else:
-                missing_chunks.append(i)
+        try:
+            s3_client = boto3.client(
+                's3',
+                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+                endpoint_url=settings.AWS_S3_ENDPOINT_URL,
+                region_name=settings.AWS_S3_REGION_NAME,
+                config=Config(signature_version='s3v4'),
+            )
+            prefix = f"videos/chunks/{video_id}/"
+            paginator = s3_client.get_paginator('list_objects_v2')
+            existing = set()
+            for page in paginator.paginate(
+                Bucket=settings.AWS_STORAGE_BUCKET_NAME, Prefix=prefix
+            ):
+                for obj in page.get('Contents', []):
+                    key = obj['Key']
+                    name = key[len(prefix):] if key.startswith(prefix) else key
+                    if name.startswith('chunk_'):
+                        try:
+                            existing.add(int(name[len('chunk_'):]))
+                        except ValueError:
+                            pass
+            uploaded_chunks = sorted(existing)
+            missing_chunks = [i for i in range(total_chunks) if i not in existing]
+        except Exception:
+            # Fallback: per-chunk exists() (slow but correct) if listing fails.
+            uploaded_chunks = []
+            missing_chunks = []
+            for i in range(total_chunks):
+                chunk_path = f"videos/chunks/{video_id}/chunk_{i:04d}"
+                if default_storage.exists(chunk_path):
+                    uploaded_chunks.append(i)
+                else:
+                    missing_chunks.append(i)
         
         progress = (len(uploaded_chunks) / total_chunks * 100) if total_chunks > 0 else 0
         
@@ -1000,7 +1040,16 @@ def upload_chunk(request):
                 video.upload_total_chunks = total_chunks
                 video.upload_completed_chunks = 0
                 video.upload_progress = 0
-                video.save(update_fields=['upload_total_chunks', 'upload_completed_chunks', 'upload_progress'])
+                # Fresh upload: clear any stale conversion state/checkpoint so
+                # the monotonic progress floor can't pin the new conversion at
+                # an old percentage (e.g. a re-upload of the same Video row).
+                video.processing_checkpoint = None
+                video.processing_progress = 0
+                video.processing_status = 'pending'
+                video.save(update_fields=[
+                    'upload_total_chunks', 'upload_completed_chunks', 'upload_progress',
+                    'processing_checkpoint', 'processing_progress', 'processing_status',
+                ])
                 # Initialize upload progress tracking and send WebSocket update
                 from apps.streaming.socket.utils import send_upload_progress
                 send_upload_progress(video_id, 0, total_chunks, "Upload started")
@@ -1262,9 +1311,14 @@ def stream_hls(request, video_slug, file_path):
         response['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
         response['Access-Control-Allow-Headers'] = 'Range'
         
-        # Cache playlists for shorter time (to allow ad updates)
-        # (.ts segments are now redirected to R2 and never reach here)
-        response['Cache-Control'] = 'public, max-age=10'
+        # Cache playlists briefly (ad markers can change between updates),
+        # but cache .ts segments long-term: segment files are immutable once
+        # written, so revalidating every 10s added latency + backend load on
+        # slow connections (this endpoint proxies segments from R2).
+        if file_path.endswith('.ts'):
+            response['Cache-Control'] = 'public, max-age=86400, immutable'
+        else:
+            response['Cache-Control'] = 'public, max-age=10'
         
         logger.info(f"Streaming HLS file: {storage_path}")
         return response
@@ -2658,4 +2712,66 @@ def retry_conversion(request, video_id):
         'stage': stage,
         'completed_variants': completed_variants,
         'resuming_from_variant': resume_from,
+    })
+
+
+# //////////////////////////////////////////////////////////////////// #
+# /////////// WEB PLAYER (templates) — READ-ONLY, haina API logic ////// #
+
+
+def watch_video(request, video_id):
+    """Render the web video player page for browser users (e.g. iPhone).
+
+    READ-ONLY view: ina-fetch tu metadata ya video kutoka database na
+    inajenga HLS stream URL. HAIBADILISHI models, serializers, wala
+    logic yoyote iliyopo ya backend/API.
+
+    URL: /watch/<slug:video_id>/  (video_id = uid au slug ya video)
+    """
+    from django.http import Http404
+    from django.shortcuts import render
+    from django.core.exceptions import ValidationError as DjangoValidationError
+
+    # uid ni UUID field — invalid strings lazima zinaswe bila 500.
+    try:
+        video = Video.objects.filter(is_published=True).filter(
+            Q(uid=video_id) | Q(slug=video_id)
+        ).first()
+    except (DjangoValidationError, ValueError):
+        video = None
+
+    if video is None:
+        raise Http404('Video haikupatikana')
+
+    if not video.is_ready_for_streaming:
+        raise Http404('Video haijachakatwa bado — jaribu tena baadaye')
+
+    backend_url = getattr(settings, 'BACKEND_URL', None) or getattr(settings, 'BASE_URL', '')
+    stream_url = f"{backend_url}/streaming/hls/{video.uid}/master.m3u8"
+
+    # Cover inarudi kwa fallback chain (thumbnail → portrait_cover →
+    # tv_poster → tv_landscape) kama public_video_info inavyofanya.
+    cover = None
+    for field in ('thumbnail', 'portrait_cover', 'tv_poster', 'tv_landscape'):
+        value = getattr(video, field, None)
+        if value:
+            try:
+                cover = value.url
+            except Exception:
+                cover = None
+            if cover:
+                break
+
+    duration_seconds = int(video.duration.total_seconds()) if video.duration else 0
+    duration_minutes = round(duration_seconds / 60) if duration_seconds else 0
+
+    return render(request, 'streaming/video_player.html', {
+        'video': video,
+        'stream_url': stream_url,
+        'cover': cover,
+        'duration_seconds': duration_seconds,
+        'duration_minutes': duration_minutes,
+        'views_count': video.views_count,
+        'play_store_url': 'https://play.google.com/store/apps/details?id=co.tz.farajayangutv.app',
+        'og_url': request.build_absolute_uri(),
     })

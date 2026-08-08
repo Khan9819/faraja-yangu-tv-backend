@@ -105,3 +105,144 @@ class TestPublicWebsitePosts:
         response = self.client.get("/api/website-posts/")
         assert response.status_code == 200
         assert isinstance(response.data["data"], list)
+
+
+@pytest.mark.django_db
+class TestPublicVideosByCategory:
+    """All R2-ready videos grouped by category → subcategory for the website.
+
+    The website fetches this endpoint to render video sections by category,
+    and new CMS uploads must appear automatically (cache invalidation).
+    """
+
+    def setup_method(self):
+        from django.core.cache import cache
+        cache.clear()  # avoid stale locmem cache leaking between tests
+        self.client = APIClient()  # intentionally unauthenticated
+        self.profile = Profile.objects.create(credit_accumulation=100)
+        self.user = User.objects.create_user(
+            username="catuser",
+            email="cat@test.com",
+            password="pass1234",
+            auth_provider="email",
+            profile=self.profile,
+        )
+        self.parent = Category.objects.create(name="Qaswida", slug="qaswida")
+        self.child = Category.objects.create(
+            name="Qaswida Zetu", slug="qaswida-zetu", parent=self.parent
+        )
+
+    def _make_video(self, title, category, **kwargs):
+        defaults = dict(
+            description="Test description",
+            is_published=True,
+            processing_status="completed",
+            hls_master_playlist="videos/hls/x/master.m3u8",
+            hls_path="videos/hls/x",
+        )
+        defaults.update(kwargs)
+        return Video.objects.create(
+            title=title, category=category, uploaded_by=self.user, **defaults
+        )
+
+    def test_endpoint_public_without_auth(self):
+        """The website must be able to fetch videos anonymously."""
+        self._make_video("A", self.child)
+        response = self.client.get("/api/videos-by-category/?refresh=1")
+        assert response.status_code == 200
+        assert isinstance(response.data["data"], list)
+
+    def test_groups_videos_under_subcategory(self):
+        """Videos appear under parent → subcategory with a watch_url."""
+        v = self._make_video("Qaswida Ya Kwanza", self.child)
+        response = self.client.get("/api/videos-by-category/?refresh=1")
+        data = response.data["data"]
+
+        parent_block = next((c for c in data if c["slug"] == "qaswida"), None)
+        assert parent_block is not None
+        sub = next(
+            (s for s in parent_block["subcategories"] if s["slug"] == "qaswida-zetu"),
+            None,
+        )
+        assert sub is not None
+        assert [x["uid"] for x in sub["videos"]] == [str(v.uid)]
+        assert sub["videos"][0]["watch_url"].endswith(f"/watch/{v.uid}/")
+
+    def test_excludes_unpublished_not_ready_and_ad_media(self):
+        """Only streamable (R2-ready), published, non-ad videos are returned."""
+        self._make_video("Ready", self.child)
+        self._make_video("Draft", self.child, is_published=False)
+        self._make_video("Processing", self.child, processing_status="processing")
+        self._make_video("Ad Media", self.child, is_ad_media=True)
+
+        response = self.client.get("/api/videos-by-category/?refresh=1")
+        sub = next(
+            s for c in response.data["data"] for s in c["subcategories"]
+            if s["slug"] == "qaswida-zetu"
+        )
+        assert [v["title"] for v in sub["videos"]] == ["Ready"]
+
+    def test_new_upload_invalidates_cache(self):
+        """Uploading new content must appear on the next website fetch."""
+        first = self.client.get("/api/videos-by-category/")
+        assert first.status_code == 200
+
+        # CMS uploads new content → post_save signal invalidates the cache
+        self._make_video("Fresh Upload", self.child)
+
+        second = self.client.get("/api/videos-by-category/")
+        sub = next(
+            s for c in second.data["data"] for s in c["subcategories"]
+            if s["slug"] == "qaswida-zetu"
+        )
+        assert [v["title"] for v in sub["videos"]] == ["Fresh Upload"]
+
+    def test_hls_completion_invalidates_cache(self):
+        """New content appears once HLS conversion completes (CMS flow)."""
+        # Cache inatengenezwa bila video yoyote ya ready.
+        first = self.client.get("/api/videos-by-category/")
+        assert first.status_code == 200
+
+        # CMS inaunda video (pending) — bado haijatayarika, isionekane.
+        pending = Video.objects.create(
+            title="Converting Video",
+            description="d",
+            category=self.child,
+            uploaded_by=self.user,
+            is_published=True,
+            processing_status="pending",
+        )
+        still_pending = self.client.get("/api/videos-by-category/")
+        assert still_pending.status_code == 200
+
+        # Conversion inakamilika: processing_status -> completed (processing
+        # fields pekee — hii ndiyo branch maalum kwenye signals).
+        pending.processing_status = "completed"
+        pending.hls_master_playlist = "videos/hls/x/master.m3u8"
+        pending.hls_path = "videos/hls/x"
+        pending.save(update_fields=["processing_status", "hls_master_playlist", "hls_path"])
+
+        # Website inafetch bila refresh — video mpya inaonekana.
+        after = self.client.get("/api/videos-by-category/")
+        sub = next(
+            s for c in after.data["data"] for s in c["subcategories"]
+            if s["slug"] == "qaswida-zetu"
+        )
+        assert [v["title"] for v in sub["videos"]] == ["Converting Video"]
+
+    def test_limit_param_caps_videos(self):
+        """?limit= caps videos per subcategory (scalability escape hatch)."""
+        self._make_video("A1", self.child)
+        self._make_video("A2", self.child)
+        response = self.client.get("/api/videos-by-category/?refresh=1&limit=1")
+        sub = next(
+            s for c in response.data["data"] for s in c["subcategories"]
+            if s["slug"] == "qaswida-zetu"
+        )
+        assert len(sub["videos"]) == 1
+
+    def test_root_variant_works(self):
+        """The non-API root variant must also resolve."""
+        self._make_video("A", self.child)
+        response = self.client.get("/videos-by-category/?refresh=1")
+        assert response.status_code == 200

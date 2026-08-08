@@ -8,6 +8,7 @@ from django.db.models import Q
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from core.response_wrapper import success_response
+from apps.streaming.views import watch_video
 
 PLAY_STORE_URL = 'https://play.google.com/store/apps/details?id=co.tz.farajayangutv.app'
 
@@ -112,6 +113,166 @@ def public_video_info(request, uid):
         'app_scheme': f'farajatv://video/{video.uid}',
     }, message='Video info loaded')
 
+def _resolve_media_url(field):
+    """Return the storage URL of an ImageField/FileField, or None if unset/broken."""
+    if not field:
+        return None
+    try:
+        return field.url
+    except Exception:
+        return None
+
+
+def _public_video_cover(video):
+    """Cover fallback chain: thumbnail → portrait_cover → tv_poster → tv_landscape."""
+    for name in ('thumbnail', 'portrait_cover', 'tv_poster', 'tv_landscape'):
+        url = _resolve_media_url(getattr(video, name, None))
+        if url:
+            return url
+    return None
+
+
+def _public_category_cover(category):
+    """Category cover fallback chain: cover → thumbnail."""
+    for name in ('cover', 'thumbnail'):
+        url = _resolve_media_url(getattr(category, name, None))
+        if url:
+            return url
+    return None
+
+
+def _public_video_payload(video, backend_url):
+    """Lightweight, anonymous-friendly video payload for the website."""
+    duration_seconds = int(video.duration.total_seconds()) if video.duration else 0
+    description = video.description or ''
+    if len(description) > 120:
+        description = description[:120] + '…'
+    return {
+        'uid': str(video.uid),
+        'title': video.title,
+        'description': description,
+        'cover': _public_video_cover(video),
+        'views_count': video.views_count,
+        'duration_seconds': duration_seconds,
+        'created_at': video.created_at.isoformat() if video.created_at else None,
+        'watch_url': f"{backend_url}/watch/{video.uid}/",
+    }
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def public_videos_by_category(request):
+    """All R2-ready videos (published + HLS completed) grouped by category.
+
+    Returns a hierarchical structure the website renders directly:
+        parent category → subcategories → videos
+
+    Videos that are not streamable yet (processing) or not published are
+    excluded, so the website only shows content that actually exists on R2.
+    The response is cached briefly (60s); the cache is invalidated by
+    signals.py whenever new content is uploaded/completed/deleted, so the
+    website picks up fresh uploads without a manual refresh.
+
+    Pass ?refresh=1 to bypass the cache (used by tests / CMS previews).
+    """
+    from django.core.cache import cache
+    from django.db.models import Prefetch
+    from apps.streaming.models import Category, Video
+
+    cache_key = 'videos_by_category:website'
+    try:
+        if request.GET.get('refresh') != '1':
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return success_response(cached)
+    except Exception:
+        # Redis down? Serve fresh data instead of failing the whole website.
+        pass
+
+    # Optional per-subcategory cap (default 0 = return ALL R2-ready videos).
+    # Website haina limit kwa sasa ("video zote"); CMS/previews zinaweza
+    # kupita ?limit=12 ili kupunguza payload kwenye catalog kubwa.
+    try:
+        limit = int(request.GET.get('limit', 0))
+        limit = max(limit, 0)
+    except (TypeError, ValueError):
+        limit = 0
+
+    def _base_videos_qs():
+        """Fresh queryset per Prefetch (Django's nested prefetch re-filters
+        the queryset, so we cannot slice here — slicing happens in Python
+        below per subcategory).
+        """
+        return (
+            Video.objects
+            .filter(is_published=True, processing_status='completed', is_ad_media=False)
+            .order_by('-created_at')
+        )
+
+    top_categories = (
+        Category.objects
+        .filter(parent__isnull=True)
+        .order_by('name')
+        .prefetch_related(
+            Prefetch('videos', queryset=_base_videos_qs()),
+            Prefetch('subcategories', queryset=Category.objects.order_by('name')),
+            Prefetch('subcategories__videos', queryset=_base_videos_qs()),
+        )
+    )
+
+    backend_url = getattr(settings, 'BACKEND_URL', None) or getattr(settings, 'BASE_URL', '')
+    result = []
+
+    for cat in top_categories:
+        block = {
+            'id': cat.id,
+            'name': cat.name,
+            'slug': cat.slug,
+            'cover': _public_category_cover(cat),
+            'subcategories': [],
+        }
+
+        # Subcategory groups (logic ile ile ya category → subcategory).
+        for sub in cat.subcategories.all():
+            sub_videos = list(sub.videos.all())
+            if limit:
+                sub_videos = sub_videos[:limit]
+            videos = [_public_video_payload(v, backend_url) for v in sub_videos]
+            if not videos:
+                continue
+            block['subcategories'].append({
+                'id': sub.id,
+                'name': sub.name,
+                'slug': sub.slug,
+                'cover': _public_category_cover(sub),
+                'videos': videos,
+            })
+
+        # Videos pinned directly to this parent category (leaf category).
+        direct_videos = list(cat.videos.all())
+        if limit:
+            direct_videos = direct_videos[:limit]
+        direct = [_public_video_payload(v, backend_url) for v in direct_videos]
+        if direct:
+            block['subcategories'].append({
+                'id': cat.id,
+                'name': cat.name,
+                'slug': cat.slug,
+                'cover': _public_category_cover(cat),
+                'videos': direct,
+                'is_parent': True,
+            })
+
+        if block['subcategories']:
+            result.append(block)
+
+    try:
+        cache.set(cache_key, result, timeout=60)
+    except Exception:
+        pass
+    return success_response(result)
+
+
 def assetlinks(request):
     data = [{
         'relation': [
@@ -139,8 +300,10 @@ urlpatterns = [
     path('.well-known/assetlinks.json', assetlinks),
     path('video/<str:uid>/', video_og_page, name='video-og'),
     path('video/<str:uid>/info/', public_video_info, name='public-video-info'),
+    path('watch/<slug:video_id>/', watch_video, name='watch_video'),
     path('website-posts/', public_website_posts, name='public-website-posts'),
     path('categories-with-cover/', public_categories_with_cover, name='public-categories-with-cover'),
+    path('videos-by-category/', public_videos_by_category, name='public-videos-by-category'),
 
     # API variants get their own unique instance namespace so they don't
     # collide with the non-API includes above (fixes urls.W005).
@@ -152,5 +315,6 @@ urlpatterns = [
     path('api/management/', include(('apps.management.urls', 'management'), namespace='api-management')),
     path('api/website-posts/', public_website_posts, name='api-public-website-posts'),
     path('api/categories-with-cover/', public_categories_with_cover, name='api-public-categories-with-cover'),
+    path('api/videos-by-category/', public_videos_by_category, name='api-public-videos-by-category'),
     path('api/video/<str:uid>/info/', public_video_info, name='api-public-video-info'),
 ]

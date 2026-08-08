@@ -1,0 +1,461 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="sw">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>{{ video.title }} — Faraja Yangu TV</title>
+  <meta name="description" content="{{ video.description|truncatechars:280 }}">
+
+  <!-- Open Graph (kwa kushare kwenye WhatsApp / social) -->
+  <meta property="og:title" content="{{ video.title }} — Faraja Yangu TV">
+  <meta property="og:description" content="{{ video.description|truncatechars:280 }}">
+  {% if cover %}
+  <meta property="og:image" content="{{ cover }}">
+  {% endif %}
+  <meta property="og:type" content="video.other">
+  <meta property="og:url" content="{{ og_url }}">
+  <meta property="og:site_name" content="Faraja Yangu TV">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="{{ video.title }} — Faraja Yangu TV">
+  <meta name="twitter:description" content="{{ video.description|truncatechars:280 }}">
+  {% if cover %}
+  <meta name="twitter:image" content="{{ cover }}">
+  {% endif %}
+  <meta name="theme-color" content="#065f46">
+
+  <!-- video.js (cdnjs) + videojs-ima (local static) -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/video.js/7.21.5/video-js.min.css">
+  <link rel="stylesheet" href="{% static 'streaming/js/videojs.ads.min.css' %}">
+  <link rel="stylesheet" href="{% static 'streaming/js/videojs.ima.min.css' %}">
+
+  <style>
+    /* ============================================================
+       Faraja Yangu TV — Web Player
+       Branding: Emerald (kijani) + Gold (dhahabu)
+       ============================================================ */
+    :root {
+      --emerald-950: #022c22;
+      --emerald-900: #064e3b;
+      --emerald-800: #065f46;
+      --emerald-700: #047857;
+      --emerald-600: #059669;
+      --emerald-500: #10b981;
+      --gold: #c9781f;
+      --gold-bright: #e2a44b;
+      --gold-soft: #f0c987;
+      --ink: #e7f3ee;
+      --ink-muted: #9db8ad;
+      --bg-deep: #050a08;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      min-height: 100%;
+      background: radial-gradient(1200px 700px at 50% -12%, #0d2b23 0%, #08130f 55%, var(--bg-deep) 100%) fixed;
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a { color: var(--gold-bright); text-decoration: none; }
+
+    /* ---------- Header ---------- */
+    .site-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 20px;
+      max-width: 1080px;
+      margin: 0 auto;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; }
+    .brand-mark {
+      width: 34px; height: 34px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--emerald-600), var(--emerald-800));
+      border: 2px solid var(--gold);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 16px;
+      box-shadow: 0 0 14px rgba(16, 185, 129, 0.35);
+    }
+    .brand-name {
+      font-size: 1.05rem; font-weight: 700; letter-spacing: 0.02em;
+      background: linear-gradient(90deg, var(--gold-bright), var(--gold-soft));
+      -webkit-background-clip: text; background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .brand-tag { font-size: 0.72rem; color: var(--ink-muted); display: block; margin-top: 1px; }
+
+    .header-cta {
+      font-size: 0.85rem; font-weight: 600;
+      color: var(--emerald-950);
+      background: linear-gradient(135deg, var(--gold-bright), var(--gold));
+      padding: 9px 16px; border-radius: 999px;
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+      box-shadow: 0 4px 14px rgba(201, 120, 31, 0.35);
+    }
+    .header-cta:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(201, 120, 31, 0.45); }
+
+    /* ---------- Player shell ---------- */
+    .player-shell {
+      max-width: 1080px;
+      margin: 8px auto 0;
+      padding: 0 14px;
+    }
+    .player-wrap {
+      position: relative;
+      width: 100%;
+      border-radius: 16px;
+      overflow: hidden;
+      background: #000;
+      border: 1px solid rgba(201, 120, 31, 0.35);
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(6, 95, 70, 0.35);
+    }
+    /* video.js player ina-fill player-wrap */
+    #content_video {
+      width: 100%;
+      height: auto;
+      aspect-ratio: 16 / 9;
+      display: block;
+      background: #000;
+    }
+    .video-js.vjs-fluid { padding-top: 56.25%; }
+
+    /* ---------- IMA ad container ----------
+       MAELEZO: videojs-ima v2 inaunda ad container yake yenyewe
+       (id="ad-container", class="ima-ad-container") ndani ya video.js
+       player — hapa tunaweka tu z-index kuwa juu ya content video.
+       USIANDIKE <div id="ad-container"> kwenye HTML — ingesababisha
+       duplicate id na overlay nyeusi ya kudumu. */
+    #ad-container {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      z-index: 20;
+      background: #000;
+      overflow: hidden;
+    }
+
+    /* ---------- Ad badge (indicator ya "Loading ads... / Ad N of M") ---------- */
+    #ad-badge {
+      position: absolute;
+      top: 12px; left: 50%;
+      transform: translateX(-50%);
+      z-index: 30;
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 16px;
+      border-radius: 999px;
+      background: rgba(2, 44, 34, 0.88);
+      border: 1px solid rgba(201, 120, 31, 0.6);
+      color: var(--gold-soft);
+      font-size: 0.82rem; font-weight: 600;
+      letter-spacing: 0.02em;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+      white-space: nowrap;
+      pointer-events: none;
+    }
+    #ad-badge.is-hidden { display: none; }
+    .ad-spinner {
+      width: 15px; height: 15px;
+      border: 2px solid rgba(201, 120, 31, 0.3);
+      border-top-color: var(--gold-bright);
+      border-radius: 50%;
+      animation: adspin 0.9s linear infinite;
+      flex: 0 0 auto;
+    }
+    .ad-spinner.is-hidden { display: none; }
+    @keyframes adspin { to { transform: rotate(360deg); } }
+
+    /* Hakuna "Skip Ad" button — imefichwa kabisa (ona maelezo kwenye JS) */
+    .ima-skip, .ima-skip-countdown, .ima-skip .ima-skip-link,
+    .ima-skip-button { display: none !important; }
+
+    /* ---------- Gate overlay ("Bofya kuanza" — Safari-friendly) ---------- */
+    #gate-overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 40;
+      display: flex; align-items: center; justify-content: center;
+      flex-direction: column;
+      text-align: center;
+      padding: 24px;
+      background:
+        linear-gradient(180deg, rgba(2, 44, 34, 0.55) 0%, rgba(5, 10, 8, 0.88) 100%),
+        var(--bg-deep);
+      transition: opacity 0.35s ease;
+    }
+    #gate-overlay.is-hidden { opacity: 0; pointer-events: none; }
+
+    .gate-cover {
+      position: absolute; inset: 0;
+      background-size: cover; background-position: center;
+      filter: blur(6px) brightness(0.45);
+      transform: scale(1.06);
+    }
+    .gate-content { position: relative; z-index: 1; max-width: 520px; }
+
+    .gate-title {
+      font-size: clamp(1.15rem, 4vw, 1.6rem);
+      font-weight: 700;
+      color: #fff;
+      margin: 18px 0 6px;
+      text-shadow: 0 2px 12px rgba(0, 0, 0, 0.6);
+    }
+    .gate-sub {
+      color: var(--ink-muted);
+      font-size: 0.9rem;
+      margin-bottom: 22px;
+    }
+    .gate-btn {
+      display: inline-flex; align-items: center; gap: 10px;
+      font-size: 1.05rem; font-weight: 700;
+      color: var(--emerald-950);
+      background: linear-gradient(135deg, var(--gold-bright), var(--gold));
+      border: none;
+      padding: 15px 34px;
+      border-radius: 999px;
+      cursor: pointer;
+      box-shadow: 0 8px 26px rgba(201, 120, 31, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+      touch-action: manipulation;
+    }
+    .gate-btn:hover { transform: translateY(-2px) scale(1.02); box-shadow: 0 12px 32px rgba(201, 120, 31, 0.55); }
+    .gate-btn:active { transform: scale(0.98); }
+    .gate-play-icon {
+      width: 26px; height: 26px;
+      border-radius: 50%;
+      background: var(--emerald-700);
+      display: inline-flex; align-items: center; justify-content: center;
+      color: var(--gold-soft);
+      font-size: 12px;
+    }
+    .gate-note {
+      margin-top: 14px;
+      font-size: 0.76rem; color: var(--ink-muted);
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+    }
+
+    /* ---------- Video meta ---------- */
+    .video-meta { max-width: 1080px; margin: 0 auto; padding: 22px 14px 40px; }
+    .meta-title { font-size: clamp(1.2rem, 3.5vw, 1.55rem); font-weight: 700; color: #fff; line-height: 1.3; }
+    .meta-row {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+      margin: 10px 0 12px;
+    }
+    .meta-pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 0.78rem; font-weight: 600;
+      color: var(--gold-soft);
+      background: rgba(201, 120, 31, 0.14);
+      border: 1px solid rgba(201, 120, 31, 0.35);
+      padding: 5px 12px; border-radius: 999px;
+    }
+    .meta-pill svg { width: 13px; height: 13px; fill: var(--gold-bright); }
+    .meta-desc {
+      color: var(--ink-muted);
+      font-size: 0.94rem; line-height: 1.65;
+      max-width: 760px;
+      white-space: pre-line;
+    }
+    .share-btn {
+      margin-top: 14px;
+      display: inline-flex; align-items: center; gap: 8px;
+      font-size: 0.85rem; font-weight: 600;
+      color: var(--ink);
+      background: rgba(6, 95, 70, 0.35);
+      border: 1px solid rgba(16, 185, 129, 0.4);
+      padding: 9px 18px; border-radius: 999px;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+    .share-btn:hover { background: rgba(6, 95, 70, 0.6); }
+    #share-feedback {
+      font-size: 0.78rem; color: var(--emerald-500);
+      margin-left: 8px;
+      opacity: 0; transition: opacity 0.3s ease;
+    }
+    #share-feedback.is-visible { opacity: 1; }
+
+    .app-cta {
+      margin-top: 22px;
+      display: inline-flex; align-items: center; gap: 10px;
+      font-size: 0.9rem; font-weight: 600;
+      color: var(--gold-soft);
+      background: linear-gradient(135deg, rgba(6, 95, 70, 0.5), rgba(2, 44, 34, 0.6));
+      border: 1px solid rgba(201, 120, 31, 0.5);
+      padding: 12px 22px; border-radius: 14px;
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+    .app-cta:hover { transform: translateY(-1px); box-shadow: 0 8px 22px rgba(201, 120, 31, 0.25); }
+
+    .site-footer {
+      max-width: 1080px; margin: 0 auto;
+      padding: 18px 14px 34px;
+      text-align: center;
+      color: var(--ink-muted);
+      font-size: 0.78rem;
+      border-top: 1px solid rgba(6, 95, 70, 0.4);
+    }
+
+    /* ---------- video.js custom skin (branding) ---------- */
+    .video-js .vjs-big-play-button {
+      background: linear-gradient(135deg, var(--emerald-600), var(--emerald-800));
+      border: 2px solid var(--gold);
+      border-radius: 50%;
+      width: 68px; height: 68px; line-height: 64px;
+      font-size: 1.4em;
+      box-shadow: 0 0 0 8px rgba(6, 95, 70, 0.25), 0 10px 30px rgba(0, 0, 0, 0.5);
+    }
+    .video-js:hover .vjs-big-play-button,
+    .video-js .vjs-big-play-button:focus { background: linear-gradient(135deg, var(--emerald-500), var(--emerald-700)); }
+    .video-js .vjs-control-bar {
+      background: linear-gradient(180deg, rgba(2, 44, 34, 0.15), rgba(2, 44, 34, 0.92));
+      border-top: 1px solid rgba(201, 120, 31, 0.35);
+    }
+    .video-js .vjs-play-progress { background: var(--gold); }
+    .video-js .vjs-play-progress::before { color: var(--gold-bright); }
+    .video-js .vjs-load-progress { background: rgba(16, 185, 129, 0.4); }
+    .video-js .vjs-load-progress div { background: rgba(16, 185, 129, 0.7); }
+    .video-js .vjs-slider { background: rgba(255, 255, 255, 0.2); }
+    .video-js .vjs-volume-level { background: var(--gold); }
+    .video-js .vjs-menu-button-popup .vjs-menu { background: rgba(2, 44, 34, 0.95); }
+    .video-js .vjs-menu-item.vjs-selected { background: var(--emerald-700); }
+    .video-js .vjs-time-control, .video-js .vjs-duration { color: var(--gold-soft); }
+    .video-js .vjs-current-time { color: var(--ink); }
+
+    /* ---------- Responsive (iPhone / mobile) ---------- */
+    @media (max-width: 640px) {
+      .site-header { padding: 12px 14px; }
+      .player-shell { padding: 0 8px; }
+      .gate-btn { width: 100%; justify-content: center; }
+      .meta-title { font-size: 1.15rem; }
+      #ad-badge { font-size: 0.74rem; padding: 7px 12px; max-width: 92%; }
+      .video-js .vjs-big-play-button { width: 56px; height: 56px; line-height: 52px; }
+    }
+  </style>
+</head>
+<body>
+
+  <header class="site-header">
+    <div class="brand">
+      <div class="brand-mark">🕌</div>
+      <div>
+        <span class="brand-name">Faraja Yangu TV</span>
+        <span class="brand-tag">Faraja kwa Waislamu</span>
+      </div>
+    </div>
+    <a class="header-cta" href="{{ play_store_url }}" target="_blank" rel="noopener">Pakua App</a>
+  </header>
+
+  <main class="player-shell">
+    <div class="player-wrap" id="player-wrap">
+
+      <!-- Content video (video.js) -->
+      <!-- Content video (video.js). Source inawekwa kupitia video-ad-player.js
+           (sources option) — hakuna <source> hapa ili kuepuka kuharibu setup.
+           Ad container ya IMA inaundwa na videojs-ima yenyewe (SIYO hapa). -->
+      <video
+        id="content_video"
+        class="video-js vjs-default-skin"
+        playsinline
+        webkit-playsinline
+        controls
+        preload="auto"
+        {% if cover %}poster="{{ cover }}"{% endif %}
+      >
+        <p class="vjs-no-js">
+          Kwa kutumia video hii, tafadhali wezesha JavaScript na ubadilishe browser
+          kuwa inayounga mkono HTML5 video.
+        </p>
+      </video>
+
+      <!-- Ad badge: "Inaandaa matangazo..." / "Tangazo 1 kati ya 3" -->
+      <div id="ad-badge" class="is-hidden" role="status" aria-live="polite">
+        <span id="ad-badge-spinner" class="ad-spinner"></span>
+        <span id="ad-badge-text">Inaandaa matangazo...</span>
+      </div>
+
+      <!-- Gate overlay: "Bofya kuanza" (inaanzisha user-gesture kwa Safari/iOS) -->
+      <div id="gate-overlay">
+        {% if cover %}
+        <div class="gate-cover" style="background-image:url('{{ cover }}')"></div>
+        {% endif %}
+        <div class="gate-content">
+          <div class="brand-mark" style="width:52px;height:52px;font-size:24px;margin:0 auto;box-shadow:0 0 26px rgba(16,185,129,0.5)">🕌</div>
+          <h1 class="gate-title">{{ video.title }}</h1>
+          <p class="gate-sub">Tangazo moja au mbili litaonyeshwa kabla ya video kuanza.</p>
+          <button id="start-btn" class="gate-btn" type="button">
+            <span class="gate-play-icon">▶</span>
+            Bofya kuanza
+          </button>
+          <p class="gate-note">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="#10b981"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+            Matangazo yanasaidia kuendesha Faraja Yangu TV bila malipo
+          </p>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <section class="video-meta">
+    <h2 class="meta-title">{{ video.title }}</h2>
+    <div class="meta-row">
+      <span class="meta-pill">
+        <svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+        {{ video.views_count }} views
+      </span>
+      {% if video.category %}
+      <span class="meta-pill">
+        <svg viewBox="0 0 24 24"><path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
+        {{ video.category.name }}{% if video.category.parent %} · {{ video.category.parent.name }}{% endif %}
+      </span>
+      {% endif %}
+      {% if duration_seconds %}
+      <span class="meta-pill">
+        <svg viewBox="0 0 24 24"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>
+        {{ duration_minutes }} dakika
+      </span>
+      {% endif %}
+    </div>
+    <p class="meta-desc">{{ video.description }}</p>
+    <div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;">
+      <button id="share-btn" class="share-btn" type="button">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="#10b981"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92 1.61 0 2.92-1.31 2.92-2.92s-1.31-2.92-2.92-2.92z"/></svg>
+        Shiriki
+      </button>
+      <span id="share-feedback">Kiungo kimenakiliwa ✓</span>
+    </div>
+    <a class="app-cta" href="{{ play_store_url }}" target="_blank" rel="noopener">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="#e2a44b"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+      Fungua kwenye App ya Faraja Yangu TV (Google Play)
+    </a>
+  </section>
+
+  <footer class="site-footer">
+    Faraja Yangu TV © 2026 — Elimu na Maarifa ya Kiislamu · farajayangutv.co.tz
+  </footer>
+
+  <!-- Config ya player (inatoka kwenye Django view) -->
+  <script>
+    window.FARAJATV_CONFIG = {
+      videoUid: "{{ video.uid }}",
+      streamUrl: "{{ stream_url|escapejs }}",
+      cover: "{{ cover|default:''|escapejs }}",
+      title: "{{ video.title|escapejs }}",
+      description: "{{ video.description|escapejs }}",
+      durationSeconds: {{ duration_seconds|default:0 }},
+      viewsCount: {{ video.views_count|default:0 }}
+    };
+  </script>
+
+  <!-- Dependencies: video.js → IMA SDK → contrib-ads → videojs-ima → player logic -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/video.js/7.21.5/video.min.js"></script>
+  <script src="https://imasdk.googleapis.com/js/sdkloader/ima3.js"></script>
+  <script src="{% static 'streaming/js/videojs.ads.min.js' %}"></script>
+  <script src="{% static 'streaming/js/videojs.ima.min.js' %}"></script>
+  <script src="{% static 'streaming/js/video-ad-player.js' %}"></script>
+</body>
+</html>
