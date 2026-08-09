@@ -1,9 +1,10 @@
 import pytest
 from unittest.mock import patch, MagicMock, call
-from apps.streaming.tasks.tasks import send_push_notification, UserGroupTypes, NotificationTypes
+from apps.streaming.tasks.tasks import send_push_notification, _send_notification, UserGroupTypes, NotificationTypes
 from apps.authentication.models import User, Role, Devices
 from apps.analytics.models import Notification
 from apps.streaming.models import Video, Category
+from firebase_admin.exceptions import InvalidArgumentError
 
 
 @pytest.mark.django_db
@@ -447,3 +448,23 @@ class TestSendPushNotification:
             "new Entertainment Video | Test Video",
             data={"video_id": str(self.video.uid), "type": "video_upload"}
         )
+
+
+@patch('firebase_admin.messaging.send')
+def test_send_notification_invalid_token_returns_false(mock_send):
+    """Regression: an InvalidArgumentError (malformed/fake token) must be caught
+    and reported as False (so callers deactivate the row) instead of crashing
+    the whole notification task with AttributeError."""
+    mock_send.side_effect = InvalidArgumentError(
+        'The registration token is not a valid FCM registration token'
+    )
+
+    result = _send_notification(
+        fcm_token='fake-invalid-token',
+        title='Test',
+        body='Test message',
+        data={'type': 'test_notification'},
+    )
+
+    assert result is False
+    mock_send.assert_called_once()

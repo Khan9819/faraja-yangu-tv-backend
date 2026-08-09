@@ -136,6 +136,7 @@ def _send_notification(fcm_token: str, title: str, body: str, data: dict = None)
     """
     import firebase_admin
     from firebase_admin import messaging, credentials
+    from firebase_admin.exceptions import InvalidArgumentError
     
     # Initialize Firebase app if not already initialized
     if not firebase_admin._apps:
@@ -196,9 +197,12 @@ def _send_notification(fcm_token: str, title: str, body: str, data: dict = None)
         # Distinct value (False) so callers can deactivate the stale device row.
         logger.warning("FCM token is unregistered")
         return False
-    except messaging.InvalidArgumentError as e:
-        logger.error(f"Invalid argument: {e}")
-        return None
+    except InvalidArgumentError as e:
+        # Invalid/malformed token (e.g. fake or corrupted). Treat like a dead
+        # token so callers deactivate the row instead of crashing the whole
+        # notification task for every other device.
+        logger.warning(f"Invalid FCM token (deactivating row): {e}")
+        return False
     except Exception as e:
         logger.error(f"Failed to send notification: {e}")
         return None
