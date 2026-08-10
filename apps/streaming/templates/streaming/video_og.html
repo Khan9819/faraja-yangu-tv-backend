@@ -21,10 +21,16 @@
   <meta name="twitter:image" content="{{ og_image }}">
 
   <style>
+    :root {
+      --emerald-800: #065f46;
+      --emerald-600: #059669;
+      --gold: #c9781f;
+      --gold-bright: #e2a44b;
+    }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #0a0a0a;
+      background: radial-gradient(900px 600px at 50% -10%, #0d2b23 0%, #08130f 55%, #050a08 100%) fixed;
       color: #fff;
       display: flex;
       align-items: center;
@@ -37,6 +43,24 @@
       max-width: 420px;
       width: 100%;
     }
+    .brand {
+      display: inline-flex; align-items: center; gap: 10px;
+      margin-bottom: 18px;
+    }
+    .brand-mark {
+      width: 38px; height: 38px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--emerald-600), var(--emerald-800));
+      border: 2px solid var(--gold);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px;
+    }
+    .brand-name {
+      font-size: 1.05rem; font-weight: 800; letter-spacing: 0.02em;
+      background: linear-gradient(90deg, var(--gold-bright), #f0c987);
+      -webkit-background-clip: text; background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
     .card img {
       width: 100%;
       border-radius: 12px;
@@ -46,30 +70,38 @@
     .card h1 {
       font-size: 1.3rem;
       margin-bottom: 8px;
-      color: #C9781F;
+      color: var(--gold-bright);
     }
     .card p {
-      color: #999;
+      color: #9db8ad;
       font-size: 0.9rem;
       margin-bottom: 24px;
       line-height: 1.5;
     }
     .btn {
       display: inline-block;
-      background: #C9781F;
-      color: #fff;
+      background: linear-gradient(135deg, var(--gold-bright), var(--gold));
+      color: #022c22;
       padding: 14px 36px;
       border-radius: 8px;
       text-decoration: none;
-      font-weight: 600;
+      font-weight: 700;
       font-size: 1rem;
-      transition: background 0.2s;
+      transition: transform 0.15s, box-shadow 0.15s;
+      box-shadow: 0 6px 18px rgba(201,120,31,0.35);
     }
-    .btn:hover { background: #a86216; }
+    .btn:hover { transform: translateY(-1px); box-shadow: 0 8px 22px rgba(201,120,31,0.5); }
     .btn-secondary {
       display: inline-block;
       margin-top: 12px;
-      color: #C9781F;
+      color: var(--gold-bright);
+      text-decoration: none;
+      font-size: 0.85rem;
+    }
+    .btn-ghost {
+      display: inline-block;
+      margin-top: 10px;
+      color: #10b981;
       text-decoration: none;
       font-size: 0.85rem;
     }
@@ -77,23 +109,78 @@
   <script>
     (function() {
       var ua = navigator.userAgent.toLowerCase();
+      // Bots/crawlers (WhatsApp preview, social scrapers) wanaona content tu.
       var isBot = /bot|crawl|spider|facebook|twitter|whatsapp|slack|telegram|discord|preview|embed|scrape/i.test(ua);
-      if (!isBot) {
-        window.top.location.replace('{{ play_store_url }}');
+      if (isBot) return;
+
+      var uid = '{{ video.uid|escapejs }}';
+      var watchUrl = '{{ watch_url|escapejs }}';
+      var playStore = '{{ play_store_url|escapejs }}';
+      var isAndroid = /android/i.test(ua);
+      var isIOS = /iphone|ipad|ipod/i.test(ua);
+
+      if (isAndroid) {
+        // Smart deep link: app ikiwa imesakinishwa inafunguka moja kwa moja
+        // (farajatv:// scheme, package imebainishwa). App isipokuwa hapo,
+        // browser inaelekeza kwenye Play Store (S.browser_fallback_url).
+        var intent = 'intent://video/' + uid + '/#Intent;' +
+          'scheme=farajatv;package=co.tz.farajayangutv.app;' +
+          'S.browser_fallback_url=' + encodeURIComponent(playStore) + ';end';
+        setTimeout(function () { window.location.href = intent; }, 1200);
+      } else if (isIOS) {
+        // iPhone hawana app ya Android — peleka kwenye web player.
+        if (watchUrl) {
+          setTimeout(function () { window.location.replace(watchUrl); }, 1200);
+        }
       }
     })();
   </script>
 </head>
 <body>
   <div class="card">
+    <div class="brand">
+      <span class="brand-mark">🕌</span>
+      <span class="brand-name">Faraja Yangu TV</span>
+    </div>
     {% if og_image %}
       <img src="{{ og_image }}" alt="{{ video.title }}">
     {% endif %}
     <h1>{{ video.title }}</h1>
     <p>{{ description }}</p>
-    <a class="btn" href="{{ play_store_url }}">Fungua kwenye Faraja Yangu TV</a>
+    <a class="btn" id="open-app-btn" href="{{ play_store_url }}">Fungua kwenye Faraja Yangu TV</a>
     <br>
-    <a class="btn-secondary" href="{{ play_store_url }}">Pakua app kutoka Google Play</a>
+    {% if watch_url %}
+    <a class="btn-ghost" id="watch-web-btn" href="{{ watch_url }}">Tazama kwenye Tovuti (Web Player)</a>
+    <br>
+    {% endif %}
+    <a class="btn-secondary" id="play-store-btn" href="{{ play_store_url }}">Pakua app kutoka Google Play</a>
   </div>
+  <script>
+    // Vitufe vinabadilishwa kulingana na device (Android → app/Play Store,
+    // iOS → web player) ikiwa auto-redirect haikufanya kazi.
+    (function () {
+      var ua = navigator.userAgent.toLowerCase();
+      if (/bot|crawl|spider|preview|embed|scrape/i.test(ua)) return;
+      var uid = '{{ video.uid|escapejs }}';
+      var watchUrl = '{{ watch_url|escapejs }}';
+      var playStore = '{{ play_store_url|escapejs }}';
+      var isAndroid = /android/i.test(ua);
+      var isIOS = /iphone|ipad|ipod/i.test(ua);
+      var openBtn = document.getElementById('open-app-btn');
+      var webBtn = document.getElementById('watch-web-btn');
+
+      if (isAndroid) {
+        var intent = 'intent://video/' + uid + '/#Intent;' +
+          'scheme=farajatv;package=co.tz.farajayangutv.app;' +
+          'S.browser_fallback_url=' + encodeURIComponent(playStore) + ';end';
+        if (openBtn) openBtn.href = intent;
+      } else if (isIOS && watchUrl && webBtn) {
+        // iOS: kitufe kikuu → web player (sio Play Store isiyofaa iPhone)
+        openBtn.href = watchUrl;
+        openBtn.textContent = 'Cheza Video Kwenye Tovuti';
+        if (webBtn) webBtn.style.display = 'none';
+      }
+    })();
+  </script>
 </body>
 </html>

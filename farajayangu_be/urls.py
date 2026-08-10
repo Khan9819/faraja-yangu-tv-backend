@@ -50,12 +50,14 @@ def video_og_page(request, uid):
             og_image = ''
     description = (video.description[:280] + '…') if len(video.description) > 280 else video.description
     og_url = request.build_absolute_uri()
+    backend_url = getattr(settings, 'BACKEND_URL', None) or getattr(settings, 'BASE_URL', '')
     return render(request, 'streaming/video_og.html', {
         'video': video,
         'og_image': og_image,
         'og_url': og_url,
         'description': description,
         'play_store_url': PLAY_STORE_URL,
+        'watch_url': f"{backend_url}/watch/{video.uid}/",
     })
 
 
@@ -274,6 +276,18 @@ def public_videos_by_category(request):
 
 
 def assetlinks(request):
+    """Android App Links verification file.
+
+    Android inakubali file ikiwa YOYOTE kati ya fingerprints zilizoorodheshwa
+    inalingana na certificate ya app kama ilivyosakinishwa. Tunaorodhesha:
+      1. 1C:47:BA:CE:... — (uhifadhi: huenda ni Play App Signing certificate)
+      2. DF:96:D4:AB:... — upload keystore (android/upload-keystore.jks)
+      3. FD:9C:F6:FE:... — faraja keystore (android/faraja-keystore.jks)
+    KAMA App inatumia Play App Signing (default), certificate halisi ya
+    verification ni ile ya Play Console → Setup → App signing → "App signing
+    key certificate" SHA-256. Kama haipo hapa, ongeza hapo (na kwenye
+    website-repo/.well-known/assetlinks.json pia).
+    """
     data = [{
         'relation': [
             'delegate_permission/common.handle_all_urls',
@@ -283,7 +297,9 @@ def assetlinks(request):
             'namespace': 'android_app',
             'package_name': 'co.tz.farajayangutv.app',
             'sha256_cert_fingerprints': [
-                '1C:47:BA:CE:EE:3F:4E:D5:F9:3E:15:65:2B:83:91:00:25:04:68:AE:53:96:BE:E7:DD:48:FF:02:AD:6E:B0:A2'
+                '1C:47:BA:CE:EE:3F:4E:D5:F9:3E:15:65:2B:83:91:00:25:04:68:AE:53:96:BE:E7:DD:48:FF:02:AD:6E:B0:A2',
+                'DF:96:D4:AB:EE:10:70:85:2D:70:92:32:27:24:B6:97:A6:D4:3E:E8:D4:A0:D9:BB:72:08:C7:0D:49:CA:73:98',
+                'FD:9C:F6:FE:EF:0E:C1:4B:6F:6E:E1:54:45:DA:16:19:72:34:65:8A:72:0A:EA:74:70:DD:C5:C1:42:0F:D5:56',
             ]
         }
     }]
