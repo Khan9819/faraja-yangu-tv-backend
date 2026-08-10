@@ -122,10 +122,12 @@
       if (isAndroid) {
         // Smart deep link: app ikiwa imesakinishwa inafunguka moja kwa moja
         // (farajatv:// scheme, package imebainishwa). App isipokuwa hapo,
-        // browser inaelekeza kwenye Play Store (S.browser_fallback_url).
+        // browser inaelekeza kwenye web player (watch_url) — video inachezwa
+        // kwenye tovuti, siyo Play Store.
+        var fallback = watchUrl || playStore;
         var intent = 'intent://video/' + uid + '/#Intent;' +
           'scheme=farajatv;package=co.tz.farajayangutv.app;' +
-          'S.browser_fallback_url=' + encodeURIComponent(playStore) + ';end';
+          'S.browser_fallback_url=' + encodeURIComponent(fallback) + ';end';
         setTimeout(function () { window.location.href = intent; }, 1200);
       } else if (isIOS) {
         // iPhone hawana app ya Android — peleka kwenye web player.
@@ -170,9 +172,10 @@
       var webBtn = document.getElementById('watch-web-btn');
 
       if (isAndroid) {
+        var fallback = watchUrl || playStore;
         var intent = 'intent://video/' + uid + '/#Intent;' +
           'scheme=farajatv;package=co.tz.farajayangutv.app;' +
-          'S.browser_fallback_url=' + encodeURIComponent(playStore) + ';end';
+          'S.browser_fallback_url=' + encodeURIComponent(fallback) + ';end';
         if (openBtn) openBtn.href = intent;
       } else if (isIOS && watchUrl && webBtn) {
         // iOS: kitufe kikuu → web player (sio Play Store isiyofaa iPhone)
