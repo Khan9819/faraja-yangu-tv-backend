@@ -86,6 +86,16 @@ def website_events(request):
     return success_response({'created': created}, message='OK')
 
 
+def _device_class(ua):
+    """Approximate device type kutoka User-Agent (mobile / tablet / desktop)."""
+    ua = (ua or '').lower()
+    if 'ipad' in ua or ('android' in ua and 'mobile' not in ua):
+        return 'tablet'
+    if 'mobile' in ua or 'android' in ua or 'iphone' in ua or 'ipod' in ua:
+        return 'mobile'
+    return 'desktop'
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def website_summary(request):
@@ -106,6 +116,19 @@ def website_summary(request):
         qs.filter(created_at__date=today).values('session_id').distinct().count()
     )
 
+    # Average muda wa kutazama kwa kila video play (maana ya watch time).
+    avg_watch_seconds = round(watch_seconds / total_video_plays, 1) if total_video_plays else 0
+
+    # Device breakdown (mobile/tablet/desktop) — kulingana na User-Agent.
+    device_counts = {'mobile': 0, 'tablet': 0, 'desktop': 0}
+    for ua in (
+        qs.exclude(user_agent='')
+        .order_by()
+        .values_list('user_agent', flat=True)
+        .distinct()
+    ):
+        device_counts[_device_class(ua)] += 1
+
     return success_response({
         'active_now': active_now,
         'total_pageviews': total_pageviews,
@@ -113,6 +136,9 @@ def website_summary(request):
         'unique_sessions': unique_sessions,
         'watch_seconds_total': watch_seconds,
         'watch_minutes_total': round(watch_seconds / 60, 1),
+        'avg_watch_seconds': avg_watch_seconds,
+        'avg_watch_minutes': round(avg_watch_seconds / 60, 1),
+        'devices': device_counts,
         'today_pageviews': today_pageviews,
         'today_video_plays': today_video_plays,
         'today_sessions': today_sessions,

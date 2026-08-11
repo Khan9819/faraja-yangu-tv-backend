@@ -2193,6 +2193,7 @@ def _post_comment_reply_payload(request, comment_id):
                 comment_text=content,
                 video_uid=str(parent.video.uid),
                 video_title=parent.video.title,
+                original_comment_text=parent.comment,
             )
         else:
             notify_user_of_reply.delay(
@@ -2201,10 +2202,58 @@ def _post_comment_reply_payload(request, comment_id):
                 comment_text=content,
                 video_uid=str(parent.video.uid),
                 video_title=parent.video.title,
+                original_comment_text=parent.comment,
             )
 
     serializer = ReplySerializer(reply)
     return success_response(serializer.data, message='Reply posted')
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def unread_comments_count(request):
+    """Replies kwa comments zangu ambazo bado sijazisoma (badge ya Flutter).
+
+    Inahesabu replies (reply_to inaonyesha comment yangu) kutoka kwa watu
+    wengine (sio mimi) ambazo zina is_read=False. Hii ndiyo inafanana na
+    push notification ya "someone replied to your comment".
+    """
+    close_old_connections()
+    count = (
+        Comment.objects.filter(
+            reply_to__user_id=request.user.id,
+            is_read=False,
+        )
+        .exclude(user=request.user)
+        .count()
+    )
+    return success_response({'unread_count': count}, message='OK')
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def mark_video_comments_read(request, video_uid):
+    """Mark replies-to-my-comments kwenye video hii kama zimesomwa (badge inafutika).
+
+    Inaitwa na Flutter mtumiaji anapofungua comment sheet ya video.
+    """
+    close_old_connections()
+    from django.core.exceptions import ValidationError as DjangoValidationError
+    try:
+        video = Video.objects.get(uid=video_uid)
+    except (Video.DoesNotExist, DjangoValidationError, ValueError):
+        return error_response('Video not found', code=404)
+
+    marked = (
+        Comment.objects.filter(
+            video=video,
+            reply_to__user_id=request.user.id,
+            is_read=False,
+        )
+        .exclude(user=request.user)
+        .update(is_read=True)
+    )
+    return success_response({'marked': marked}, message='OK')
 
 
 @api_view(['GET', 'POST'])
@@ -2467,6 +2516,7 @@ def cms_comment_reply(request, comment_id):
                 comment_text=text,
                 video_uid=str(parent.video.uid),
                 video_title=parent.video.title,
+                original_comment_text=parent.comment,
             )
         else:
             notify_user_of_reply.delay(
@@ -2475,6 +2525,7 @@ def cms_comment_reply(request, comment_id):
                 comment_text=text,
                 video_uid=str(parent.video.uid),
                 video_title=parent.video.title,
+                original_comment_text=parent.comment,
             )
 
     return success_response({

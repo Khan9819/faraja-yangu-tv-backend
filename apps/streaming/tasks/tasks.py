@@ -310,9 +310,13 @@ def send_push_notification(self, target: UserGroupTypes, notification_type: Noti
     logger.info(f"Push notifications sent: {sent_count}, failed: {failed_count}")
 
 @celery_app.task(bind=True, max_retries=2, retry_backoff=30)
-def notify_user_of_reply(self, commenter_user_id: int, replier_name: str, comment_text: str, video_uid: str, video_title: str):
+def notify_user_of_reply(self, commenter_user_id: int, replier_name: str, comment_text: str, video_uid: str, video_title: str, original_comment_text: str = ''):
     """
     Send a push notification to a single user when someone replies to their comment.
+
+    [original_comment_text] ni maandishi ya comment ya asili iliyojibiwa —
+    inaonyeshwa kwenye notification ili mtumiaji ajue "last comment" gani
+    imejibiwa (sio tu reply pekee).
     """
     close_old_connections()
 
@@ -322,7 +326,12 @@ def notify_user_of_reply(self, commenter_user_id: int, replier_name: str, commen
         return
 
     title = f'{replier_name} replied to your comment'
-    body = comment_text[:120]
+    reply_part = comment_text[:100].strip()
+    original_part = (original_comment_text or '').strip()[:90]
+    if original_part:
+        body = f'"{reply_part}"\nKwenye: "{original_part}"'
+    else:
+        body = reply_part
 
     # Attach the video cover so the app renders the same rich (image)
     # notification style used for new-video notifications.
@@ -339,6 +348,8 @@ def notify_user_of_reply(self, commenter_user_id: int, replier_name: str, commen
         'video_id': str(video_uid),
         'video_title': video_title,
         'video_thumbnail': thumbnail_url,
+        'reply_text': reply_part,
+        'original_comment': original_part,
     }
 
     sent = 0

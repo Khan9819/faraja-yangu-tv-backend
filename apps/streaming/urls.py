@@ -58,6 +58,8 @@ urlpatterns = [
     path('comments/<int:comment_id>/replies/', views.comment_replies_stream, name='comment-replies'),
     path('comments/<int:comment_id>/like/', views.comment_like_stream, name='comment-like'),
     path('comments/<int:comment_id>/', views.delete_comment_stream, name='comment-delete'),
+    path('comments/unread-count/', views.unread_comments_count, name='comments-unread-count'),
+    path('stream/<str:video_uid>/comments/read/', views.mark_video_comments_read, name='stream-comments-read'),
     
     path('playlists/', views.playlist_list, name='playlist-list'),
     path('playlists/create/', views.playlist_create, name='playlist-create'),

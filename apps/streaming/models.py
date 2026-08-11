@@ -174,6 +174,10 @@ class Comment(BaseModel):
     comment = models.TextField()
     reply_to = models.ForeignKey('self', related_name='replies', on_delete=models.CASCADE, null=True, blank=True)
     interaction_time = models.DurationField(null=True, blank=True)
+    # True wakati mwenye comment ya asili ameiona reply hii. Inatumika kwa
+    # badge ya "unread comments" (replies kwa comments zangu ambazo
+    # sijaona bado) — inafutwa mtumiaji anapofungua comment sheet ya video.
+    is_read = models.BooleanField(default=False, db_index=True)
 
     class Meta:
         indexes = [
