@@ -223,6 +223,7 @@
     playbackRequested = true;
 
     hideGate();
+    hidePlayerError();
 
     // videojs-ima haijapakia (au IMA imeharibika) → cheza content tu.
     if (!imaAvailable) {
@@ -285,6 +286,39 @@
   }
 
   /* ----------------------------------------------------------------
+   * Branded error state (badala ya modal ya default ya video.js)
+   * ---------------------------------------------------------------- */
+  var errorOverlay = null;
+
+  function showPlayerError(message) {
+    if (!errorOverlay) {
+      errorOverlay = document.createElement('div');
+      errorOverlay.id = 'player-error-overlay';
+      errorOverlay.innerHTML =
+        '<div class="err-content">' +
+          '<div class="err-icon">⚠</div>' +
+          '<p class="err-title">Video haiwezi kuchezwa</p>' +
+          '<p class="err-msg"></p>' +
+          '<button type="button" class="err-btn" id="err-retry">Jaribu tena</button>' +
+        '</div>';
+      document.getElementById('player-wrap').appendChild(errorOverlay);
+      errorOverlay.querySelector('#err-retry').addEventListener('click', function () {
+        errorOverlay.classList.add('is-hidden');
+        if (player) {
+          try { player.load(); player.play(); } catch (e) { /* noop */ }
+        }
+      });
+    }
+    var msgEl = errorOverlay.querySelector('.err-msg');
+    if (msgEl) msgEl.textContent = message || '';
+    errorOverlay.classList.remove('is-hidden');
+  }
+
+  function hidePlayerError() {
+    if (errorOverlay) errorOverlay.classList.add('is-hidden');
+  }
+
+  /* ----------------------------------------------------------------
    * Init
    * ---------------------------------------------------------------- */
   function init() {
@@ -328,9 +362,26 @@
       player.on('ads-ad-started', onAdStarted);
     }
 
-    // Ikiwa content yenyewe ina error (HLS), ficha badge.
+    // Ondoa Settings menu (gear) — "name tabs" dropdown ya quality inayoonekana
+    // kama dropbox. Quality inabadilika moja kwa moja (Auto) kupitia VHS.
+    try {
+      if (player.controlBar) {
+        var settingsBtn = player.controlBar.getChild('settingsMenuButton');
+        if (settingsBtn) {
+          player.controlBar.removeChild(settingsBtn);
+        }
+      }
+    } catch (err) { /* noop */ }
+
+    // Ikiwa content yenyewe ina error (HLS), ficha badge na onyesha
+    // ujumbe wa kirafiki (badala ya modal ya default ya video.js).
     player.on('error', function () {
       hideAdBadge();
+      var err = player.error ? player.error() : null;
+      showPlayerError(
+        'Video imeshindwa kucheza. Tafadhali angalia mtandao wako na jaribu tena.' +
+        (err && err.code === 4 ? ' (Stream haikupatikana)' : '')
+      );
     });
 
     // Start button — safari: lazima user gesture.

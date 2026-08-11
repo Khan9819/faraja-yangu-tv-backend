@@ -8,7 +8,7 @@ from django.db.models import Q
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from core.response_wrapper import success_response
-from apps.streaming.views import watch_video
+from apps.streaming.views import watch_video, player_asset
 
 PLAY_STORE_URL = 'https://play.google.com/store/apps/details?id=co.tz.farajayangutv.app'
 
@@ -317,6 +317,7 @@ urlpatterns = [
     path('video/<str:uid>/', video_og_page, name='video-og'),
     path('video/<str:uid>/info/', public_video_info, name='public-video-info'),
     path('watch/<slug:video_id>/', watch_video, name='watch_video'),
+    path('player-assets/<path:asset_path>', player_asset, name='player-asset'),
     path('website-posts/', public_website_posts, name='public-website-posts'),
     path('categories-with-cover/', public_categories_with_cover, name='public-categories-with-cover'),
     path('videos-by-category/', public_videos_by_category, name='public-videos-by-category'),

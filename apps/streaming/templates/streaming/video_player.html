@@ -26,8 +26,13 @@
 
   <!-- video.js (cdnjs) + videojs-ima (local static) -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/video.js/7.21.5/video-js.min.css">
-  <link rel="stylesheet" href="{% static 'streaming/js/videojs.ads.min.css' %}">
-  <link rel="stylesheet" href="{% static 'streaming/js/videojs.ima.min.css' %}">
+  <!-- Static hizi zinaserved na Django yenyewe (same-origin) — siyo R2,
+       kwa sababu R2 haina CORS na browser inaziblock (ERR_BLOCKED_BY_ORB)
+       ambayo ilivunja player initialization na playback. -->
+  <!-- v=3: cache-busting — ongeza namba hii kila unapobadilisha player JS/CSS
+       (browser inahifadhi assets kwa saa 24, bila hii users wanaweza kupata ya zamani) -->
+  <link rel="stylesheet" href="{{ asset_base_url }}/js/videojs.ads.min.css?v=3">
+  <link rel="stylesheet" href="{{ asset_base_url }}/js/videojs.ima.min.css?v=3">
 
   <style>
     /* ============================================================
@@ -171,6 +176,44 @@
     /* Hakuna "Skip Ad" button — imefichwa kabisa (ona maelezo kwenye JS) */
     .ima-skip, .ima-skip-countdown, .ima-skip .ima-skip-link,
     .ima-skip-button { display: none !important; }
+
+    /* ---------- Branded error state (badala ya modal ya default ya video.js) ---------- */
+    /* Tunaficha modal ya default ya video.js — tunatumia overlay yetu yenye brand */
+    .vjs-modal-dialog { display: none !important; }
+
+    #player-error-overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 45;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(5, 10, 8, 0.92);
+      padding: 24px;
+      text-align: center;
+    }
+    #player-error-overlay.is-hidden { display: none; }
+    .err-content { max-width: 380px; }
+    .err-icon {
+      width: 54px; height: 54px;
+      margin: 0 auto 12px;
+      border-radius: 50%;
+      background: rgba(201, 120, 31, 0.15);
+      border: 1px solid rgba(201, 120, 31, 0.5);
+      color: var(--gold-bright);
+      font-size: 26px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .err-title { font-size: 1.1rem; font-weight: 700; color: #fff; margin-bottom: 6px; }
+    .err-msg { color: var(--ink-muted); font-size: 0.9rem; line-height: 1.55; }
+    .err-btn {
+      margin-top: 16px;
+      font-size: 0.92rem; font-weight: 700;
+      color: var(--emerald-950);
+      background: linear-gradient(135deg, var(--gold-bright), var(--gold));
+      border: none;
+      padding: 11px 26px;
+      border-radius: 999px;
+      cursor: pointer;
+    }
 
     /* ---------- Gate overlay ("Bofya kuanza" — Safari-friendly) ---------- */
     #gate-overlay {
@@ -453,9 +496,19 @@
 
   <!-- Dependencies: video.js → IMA SDK → contrib-ads → videojs-ima → player logic -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/video.js/7.21.5/video.min.js"></script>
+  <!-- Shim: video.js 7.21+ imeondoa `videojs.obj` lakini videojs-contrib-ads 7.3.3
+       bado inahitaji `videojs.obj.merge` (huenda pia inaonekana kwenye videojs-ima).
+       Bila hii, plugins za ads zinashindwa ku-init na matangazo hayachezi kabisa. -->
+  <script>
+    (function () {
+      if (window.videojs && !window.videojs.obj && window.videojs.mergeOptions) {
+        window.videojs.obj = { merge: window.videojs.mergeOptions };
+      }
+    })();
+  </script>
   <script src="https://imasdk.googleapis.com/js/sdkloader/ima3.js"></script>
-  <script src="{% static 'streaming/js/videojs.ads.min.js' %}"></script>
-  <script src="{% static 'streaming/js/videojs.ima.min.js' %}"></script>
-  <script src="{% static 'streaming/js/video-ad-player.js' %}"></script>
+  <script src="{{ asset_base_url }}/js/videojs.ads.min.js?v=3"></script>
+  <script src="{{ asset_base_url }}/js/videojs.ima.min.js?v=3"></script>
+  <script src="{{ asset_base_url }}/js/video-ad-player.js?v=3"></script>
 </body>
 </html>

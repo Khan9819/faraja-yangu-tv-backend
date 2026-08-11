@@ -2719,6 +2719,45 @@ def retry_conversion(request, video_id):
 # /////////// WEB PLAYER (templates) — READ-ONLY, haina API logic ////// #
 
 
+def player_asset(request, asset_path):
+    """Serve the web player's JS/CSS assets from Django itself (same-origin).
+
+    Kwa nini hii ipo: collectstatic inaupload files hizi kwenye R2 (S3Boto3Storage)
+    na `{% static %}` inarejesha signed R2 URLs. Lakini R2 bucket haijasanidiwa
+    CORS headers — kwa hiyo browser inaziblock (ERR_BLOCKED_BY_ORB) na
+    video-ad-player.js haikutekelezeka → player haijaanzishwa → video haichezi.
+
+    Hapa tunaserve files hizo moja kwa moja kutoka Django (same-origin):
+    - Hakuna CORS inayohitajika (same origin)
+    - Inafanya kazi local na production bila ku-gusa R2 / Cloudflare dashboard
+    - Path traversal imezuiwa (tu js/css chini ya apps/streaming/static/streaming/)
+
+    URL: /player-assets/js/video-ad-player.js (na nyinginezo)
+    """
+    import os
+    from pathlib import Path as PathLib
+
+    ASSET_ROOT = PathLib(__file__).resolve().parent / 'static' / 'streaming'
+
+    # Path traversal protection: hakuna '..', hakuna absolute paths,
+    # na extensions ni js/css pekee.
+    rel = PathLib(asset_path)
+    if rel.is_absolute() or '..' in rel.parts or rel.suffix not in ('.js', '.css'):
+        raise Http404('Not found')
+
+    full = (ASSET_ROOT / rel).resolve()
+    if not str(full).startswith(str(ASSET_ROOT.resolve()) + os.sep):
+        raise Http404('Not found')
+    if not full.is_file():
+        raise Http404('Not found')
+
+    content_type = mimetypes.guess_type(str(full))[0] or 'application/octet-stream'
+    response = FileResponse(full.open('rb'), content_type=content_type)
+    response['Cache-Control'] = 'public, max-age=86400'
+    response['Access-Control-Allow-Origin'] = '*'
+    return response
+
+
 def watch_video(request, video_id):
     """Render the web video player page for browser users (e.g. iPhone).
 
@@ -2774,4 +2813,7 @@ def watch_video(request, video_id):
         'views_count': video.views_count,
         'play_store_url': 'https://play.google.com/store/apps/details?id=co.tz.farajayangutv.app',
         'og_url': request.build_absolute_uri(),
+        # JS/CSS za player zinaserved na Django yenyewe (same-origin) —
+        # siyo R2 — kwa sababu R2 haina CORS na browser inaziblock (ORB).
+        'asset_base_url': f"{backend_url}/player-assets",
     })
