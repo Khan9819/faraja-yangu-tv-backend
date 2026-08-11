@@ -185,17 +185,46 @@ def update_category(request, pk):
 @permission_classes([IsAuthenticated])
 def get_categories(request):
     types: ('all', 'parent', 'child') = request.GET.get('type', 'all')
-    
+
+    # Annotated counts to avoid N+1 count queries in CategorySerializer.
+    # _category_count (children) is safe for every type; _video_count is only
+    # annotated for child/leaf categories (it counts direct videos) — parent
+    # categories fall back to the serializer's subcategory-wide count.
+    cache_key = f'categories:{types}'
+    if not settings.DEBUG:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return success_response(cached)
+
+    published_videos = Q(
+        videos__is_published=True,
+        videos__processing_status='completed',
+        videos__is_ad_media=False,
+    )
+
     if types == 'parent':
-        categories = Category.objects.filter(parent_id=None)
+        categories = Category.objects.filter(parent_id=None).annotate(
+            _category_count=Count('subcategories', distinct=True),
+        )
     elif types == 'child':
-        categories = Category.objects.filter(parent_id__isnull=False)
+        categories = Category.objects.filter(parent_id__isnull=False).annotate(
+            _video_count=Count('videos', filter=published_videos, distinct=True),
+            _category_count=Count('subcategories', distinct=True),
+        )
     else:
-        categories = Category.objects.all()
-    
+        categories = Category.objects.all().annotate(
+            _category_count=Count('subcategories', distinct=True),
+        )
+
     serializer = CategorySerializer(categories, many=True)
-    
-    return success_response(serializer.data)
+    data = serializer.data
+    if not settings.DEBUG:
+        try:
+            cache.set(cache_key, data, timeout=60)
+        except Exception:
+            pass
+
+    return success_response(data)
 
 @api_view(['GET', 'DELETE'])
 @permission_classes([IsAuthenticated])
@@ -254,9 +283,36 @@ def get_category_videos(request, pk):
 
 @api_view(['GET'])
 def get_subcategories(request, category_id):
-    subcategories = Category.objects.filter(~Q(parent=None), parent=category_id)
+    # Cache (60s) + annotated counts — subcategories hubadilika mara chache,
+    # na annotation inaondoa N+1 count queries (chanzo cha latency ya juu).
+    cache_key = f'subcategories:{category_id}'
+    if not settings.DEBUG:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return success_response(cached)
+
+    subcategories = Category.objects.filter(
+        ~Q(parent=None), parent=category_id
+    ).annotate(
+        _video_count=Count(
+            'videos',
+            filter=Q(
+                videos__is_published=True,
+                videos__processing_status='completed',
+                videos__is_ad_media=False,
+            ),
+            distinct=True,
+        ),
+        _category_count=Count('subcategories', distinct=True),
+    )
     serializer = CategorySerializer(subcategories, many=True)
-    return success_response(serializer.data)
+    data = serializer.data
+    if not settings.DEBUG:
+        try:
+            cache.set(cache_key, data, timeout=60)
+        except Exception:
+            pass
+    return success_response(data)
 
 @api_view(['GET'])
 def get_subcategory(request, pk):

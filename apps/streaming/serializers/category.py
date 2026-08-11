@@ -24,6 +24,12 @@ class CategorySerializer(serializers.ModelSerializer):
     
     def get_video_count(self, obj):
         """Return total number of published videos in this category and subcategories"""
+        # Fast path: use the annotated count provided by list views to avoid
+        # N+1 count queries (one per category). Only trusted for leaf
+        # categories — parents fall through to the subcategory-wide query.
+        annotated = getattr(obj, '_video_count', None)
+        if annotated is not None and obj.parent_id is not None:
+            return annotated
         if obj.parent_id is None:
             # Parent category: count only videos in subcategories
             return Video.objects.filter(
@@ -36,6 +42,9 @@ class CategorySerializer(serializers.ModelSerializer):
         return obj.videos.filter(is_published=True, processing_status='completed', is_ad_media=False).count()
     
     def get_category_count(self, obj):
+        annotated = getattr(obj, '_category_count', None)
+        if annotated is not None:
+            return annotated
         if obj.parent_id is None:
             return Category.objects.filter(parent_id=obj.id).count()
         return 0
