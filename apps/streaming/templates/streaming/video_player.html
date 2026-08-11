@@ -616,16 +616,28 @@
     }
 
     /* ---------- Funga / Rudi kwenye website ---------- */
+    /* Home ya website — kwenye production daima farajayangutv.co.tz
+       (siyo backend root, ambayo iko 404). Hii pia inafanya kazi hata
+       watch page ikifunguliwa kwenye backend domain (webview/old links). */
+    function siteHome() {
+      var h = location.hostname;
+      if (h === 'localhost' || h === '127.0.0.1') return location.origin + '/';
+      return 'https://farajayangutv.co.tz/';
+    }
     function closePlayer() {
       var ref = document.referrer;
       try {
-        if (ref && new URL(ref).hostname === location.hostname) {
-          send([{ event_type: 'click', page: page }]);
-          history.back();
-          return;
+        if (ref) {
+          var refHost = new URL(ref).hostname;
+          if (refHost === location.hostname && location.hostname !== 'backend.farajayangutv.co.tz') {
+            send([{ event_type: 'click', page: page }]);
+            history.back();
+            return;
+          }
         }
       } catch (e) { /* noop */ }
-      location.href = '/';
+      send([{ event_type: 'click', page: page }]);
+      location.href = siteHome();
     }
 
     var closeBtn = document.getElementById('player-close');
