@@ -22,7 +22,15 @@ class PlatformSettings(BaseModel):
 
     platform_name = models.CharField(max_length=255, default='FarajaYangu TV')
     language = models.CharField(max_length=50, default='English')
-    app_version = models.CharField(max_length=50, default='1.0.0')
+    # app_version = latest_version inayotumiwa na in-app update (management/app-version/)
+    app_version = models.CharField(max_length=50, default='1.1.1')
+    minimum_version = models.CharField(max_length=50, default='1.1.0')
+    release_notes = models.JSONField(default=list, blank=True)
+    update_url = models.CharField(
+        max_length=500,
+        default='https://play.google.com/store/apps/details?id=co.tz.farajayangutv.app',
+    )
+    is_force_update = models.BooleanField(default=False)
     push_notifications_enabled = models.BooleanField(default=True)
     email_notifications_enabled = models.BooleanField(default=True)
 
@@ -43,9 +51,10 @@ class PlatformSettings(BaseModel):
     @classmethod
     def load(cls):
         """Load or create the singleton settings instance."""
+        # NOTE: usiweke app_version kwenye defaults hapa — inaweza kuwa ya kale.
+        # Model field default (sasa '1.1.1') ndiyo inayotumika kwa singleton mpya.
         obj, _ = cls.objects.get_or_create(pk=1, defaults={
             'platform_name': 'FarajaYangu TV',
             'language': 'English',
-            'app_version': '1.0.0',
         })
         return obj

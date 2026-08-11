@@ -33,7 +33,7 @@ from .reports import (
     top_videos,
     category_performance,
 )
-from .settings import settings_view
+from .settings import settings_view, app_version
 from .comments import (
     comment_conversations,
     comment_conversation_detail,

@@ -11,6 +11,10 @@ class PlatformSettingsSerializer(serializers.ModelSerializer):
             'platform_name',
             'language',
             'app_version',
+            'minimum_version',
+            'release_notes',
+            'update_url',
+            'is_force_update',
             'push_notifications_enabled',
             'email_notifications_enabled',
         ]

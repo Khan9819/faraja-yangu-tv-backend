@@ -43,6 +43,9 @@ urlpatterns = [
     # Settings (GET + PATCH on same path)
     path('settings/', views.settings_view, name='settings'),
 
+    # In-app update check (public — inatumiwa na App: management/app-version/)
+    path('app-version/', views.app_version, name='app-version'),
+
     # Active Users Today
     path('active-users-today/', views.active_users_today, name='active-users-today'),
 
