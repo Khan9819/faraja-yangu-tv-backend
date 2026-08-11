@@ -75,7 +75,44 @@
       max-width: 1080px;
       margin: 0 auto;
     }
+    .header-left { display: flex; align-items: center; gap: 12px; }
     .brand { display: flex; align-items: center; gap: 10px; }
+    /* Button ya kurudi ("Funga player") kwenye header */
+    .header-back {
+      width: 38px; height: 38px;
+      border-radius: 50%;
+      border: 1px solid rgba(201, 120, 31, 0.55);
+      background: rgba(2, 44, 34, 0.85);
+      color: var(--gold-soft);
+      font-size: 16px;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+      transition: transform 0.15s ease, background 0.15s ease;
+      touch-action: manipulation;
+    }
+    .header-back:hover { transform: scale(1.08); background: rgba(6, 95, 70, 0.95); }
+
+    /* ---------- Close button juu ya player (✕) ---------- */
+    .player-close {
+      position: absolute;
+      top: 12px; right: 12px;
+      z-index: 50; /* juu ya gate (40), error (45), ad badge (30) */
+      width: 42px; height: 42px;
+      border-radius: 50%;
+      border: 1px solid rgba(201, 120, 31, 0.65);
+      background: rgba(2, 44, 34, 0.88);
+      color: var(--gold-soft);
+      font-size: 19px;
+      line-height: 1;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 5px 16px rgba(0, 0, 0, 0.55);
+      transition: transform 0.15s ease, background 0.15s ease;
+      touch-action: manipulation;
+    }
+    .player-close:hover { transform: scale(1.1); background: rgba(6, 95, 70, 0.98); }
+    .player-close:active { transform: scale(0.96); }
     .brand-mark {
       width: 34px; height: 34px;
       border-radius: 50%;
@@ -372,6 +409,7 @@
     @media (max-width: 640px) {
       .site-header { padding: 12px 14px; }
       .player-shell { padding: 0 8px; }
+      .player-close { top: 8px; right: 8px; width: 38px; height: 38px; font-size: 17px; }
       .gate-btn { width: 100%; justify-content: center; }
       .meta-title { font-size: 1.15rem; }
       #ad-badge { font-size: 0.74rem; padding: 7px 12px; max-width: 92%; }
@@ -382,11 +420,14 @@
 <body>
 
   <header class="site-header">
-    <div class="brand">
-      <div class="brand-mark">🕌</div>
-      <div>
-        <span class="brand-name">Faraja Yangu TV</span>
-        <span class="brand-tag">Faraja kwa Waislamu</span>
+    <div class="header-left">
+      <button id="header-back" class="header-back" type="button" aria-label="Rudi nyuma" title="Rudi">←</button>
+      <div class="brand">
+        <div class="brand-mark">🕌</div>
+        <div>
+          <span class="brand-name">Faraja Yangu TV</span>
+          <span class="brand-tag">Faraja kwa Waislamu</span>
+        </div>
       </div>
     </div>
     <a class="header-cta" href="{{ play_store_url }}" target="_blank" rel="noopener">Pakua App</a>
@@ -439,6 +480,9 @@
           </p>
         </div>
       </div>
+
+      <!-- Close button: kufunga/kurudi kwenye website (✕) -->
+      <button id="player-close" class="player-close" type="button" aria-label="Funga player" title="Funga">✕</button>
 
     </div>
   </main>
@@ -570,6 +614,24 @@
         }
       } catch (e) { /* usivunje player kwa tracking */ }
     }
+
+    /* ---------- Funga / Rudi kwenye website ---------- */
+    function closePlayer() {
+      var ref = document.referrer;
+      try {
+        if (ref && new URL(ref).hostname === location.hostname) {
+          send([{ event_type: 'click', page: page }]);
+          history.back();
+          return;
+        }
+      } catch (e) { /* noop */ }
+      location.href = '/';
+    }
+
+    var closeBtn = document.getElementById('player-close');
+    var backBtn = document.getElementById('header-back');
+    if (closeBtn) closeBtn.addEventListener('click', closePlayer);
+    if (backBtn) backBtn.addEventListener('click', closePlayer);
 
     var video = document.getElementById('content_video');
     var page = '/watch/' + cfg.videoUid + '/';
