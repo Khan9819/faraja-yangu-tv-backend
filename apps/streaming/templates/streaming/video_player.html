@@ -510,5 +510,101 @@
   <script src="{{ asset_base_url }}/js/videojs.ads.min.js?v=3"></script>
   <script src="{{ asset_base_url }}/js/videojs.ima.min.js?v=3"></script>
   <script src="{{ asset_base_url }}/js/video-ad-player.js?v=3"></script>
+
+  <!-- ================================================================
+       Website Engagement Tracking (web player)
+       Inatuma: pageview, video_play, watch_seconds (kila sek ~15),
+       video_end, na heartbeat (kwa "wako mtandaoni sasa").
+       ================================================================ -->
+  <script>
+  (function () {
+    'use strict';
+    if (window.__farajatvPlayerTracking) return;
+    window.__farajatvPlayerTracking = true;
+
+    var cfg = window.FARAJATV_CONFIG || {};
+    if (!cfg.videoUid) return;
+
+    var EVENTS_API = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+      ? window.location.origin + '/api/analytics/website/events/'
+      : 'https://backend.farajayangutv.co.tz/api/analytics/website/events/';
+
+    function getSession() {
+      var key = 'fjtv_web_session';
+      var now = Date.now();
+      try {
+        var raw = localStorage.getItem(key);
+        if (raw) {
+          var parts = raw.split('|');
+          var sid = parts[0];
+          var ts = parseInt(parts[1], 10) || 0;
+          if (sid && (now - ts) < 24 * 60 * 60 * 1000) return sid;
+        }
+      } catch (e) { /* noop */ }
+      var fresh = 'web-' + Math.random().toString(36).slice(2, 10) + '-' + Date.now().toString(36);
+      try { localStorage.setItem(key, fresh + '|' + now); } catch (e) { /* noop */ }
+      return fresh;
+    }
+
+    var sessionId = getSession();
+
+    function send(events) {
+      if (!events || !events.length) return;
+      try {
+        var payload = events.map(function (e) {
+          e.session_id = sessionId;
+          e.video_uid = cfg.videoUid;
+          e.video_title = cfg.title;
+          return e;
+        });
+        var body = JSON.stringify(payload);
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon(EVENTS_API, new Blob([body], { type: 'application/json' }));
+        } else {
+          fetch(EVENTS_API, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: body,
+            keepalive: true,
+          }).catch(function () { /* ignore */ });
+        }
+      } catch (e) { /* usivunje player kwa tracking */ }
+    }
+
+    var video = document.getElementById('content_video');
+    var page = '/watch/' + cfg.videoUid + '/';
+    var played = false;
+
+    send([{ event_type: 'pageview', page: page }]);
+
+    if (video) {
+      video.addEventListener('play', function () {
+        if (!played) {
+          played = true;
+          send([{ event_type: 'video_play', page: page }]);
+        }
+      }, { once: true });
+
+      video.addEventListener('ended', function () {
+        send([{ event_type: 'video_end', page: page }]);
+      });
+    }
+
+    /* watch_seconds: kila sekunde 15 muda wa kucheza unakusanywa na kutumwa */
+    var acc = 0;
+    setInterval(function () {
+      if (video && !video.paused && !video.ended) {
+        acc += 15;
+        send([{ event_type: 'watch_seconds', page: page, value: acc }]);
+        acc = 0;
+      }
+    }, 15 * 1000);
+
+    /* Heartbeat kila dakika 1 */
+    setInterval(function () {
+      send([{ event_type: 'heartbeat', page: page }]);
+    }, 60 * 1000);
+  })();
+  </script>
 </body>
 </html>
