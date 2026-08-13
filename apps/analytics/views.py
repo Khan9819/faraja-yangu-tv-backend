@@ -54,7 +54,10 @@ def website_events(request):
 
     valid_types = {choice.value for choice in WebsiteEvent.EVENT_TYPES}
     created = 0
-    ua = str(request.META.get('HTTP_USER_AGENT', ''))[:500]
+    # Flutter app hupita 'user_agent' yake mwenyewe kwenye body (e.g.
+    # "FarajaTV App/1.1.1 (Android; mobile)") ili device ihesabiwe kama
+    # mobile/tablet — vinginevyo UA ya Dart (dart:io) ingeonekana kama desktop.
+    request_ua = str(request.META.get('HTTP_USER_AGENT', ''))[:500]
     ip = _client_ip(request)[:64]
 
     for ev in events[:50]:
@@ -70,6 +73,7 @@ def website_events(request):
             value = int(ev.get('value', 0) or 0)
         except (TypeError, ValueError):
             value = 0
+        ua = str(ev.get('user_agent') or request_ua)[:500]
         WebsiteEvent.objects.create(
             session_id=session,
             event_type=etype,

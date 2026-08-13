@@ -60,6 +60,36 @@ class TestCommentUnread:
         resp = client.get(url)
         assert resp.json()["data"]["unread_count"] == 0
 
+    def test_mark_all_comments_read_clears_badge_across_videos(self):
+        client = self._force_auth(self.user)
+
+        # Video ya pili na reply ya pili
+        video2 = Video.objects.create(
+            title="Vid2",
+            category=self.category,
+            uid="22222222-2222-2222-2222-222222222222",
+            uploaded_by=self.admin,
+        )
+        comment2 = Comment.objects.create(video=video2, user=self.user, comment="Pili pia")
+
+        # Admin anajibu comment zote mbili (videos tofauti)
+        client2 = self._force_auth(self.admin)
+        client2.post(reverse("streaming:cms-comment-reply", args=[self.comment.id]), {"text": "Reply 1"}, format="json")
+        client2.post(reverse("streaming:cms-comment-reply", args=[comment2.id]), {"text": "Reply 2"}, format="json")
+
+        url = reverse("streaming:comments-unread-count")
+        resp = client.get(url)
+        assert resp.json()["data"]["unread_count"] == 2
+
+        # read-all inafuta zote mara moja (hata kwenye video tofauti)
+        read_all = reverse("streaming:comments-read-all")
+        resp = client.post(read_all)
+        assert resp.status_code == 200
+        assert resp.json()["data"]["marked"] == 2
+
+        resp = client.get(url)
+        assert resp.json()["data"]["unread_count"] == 0
+
     def test_own_replies_do_not_count(self):
         client = self._force_auth(self.user)
         reply_url = reverse("streaming:cms-comment-reply", args=[self.comment.id])

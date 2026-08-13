@@ -2209,6 +2209,27 @@ def _post_comment_reply_payload(request, comment_id):
     return success_response(serializer.data, message='Reply posted')
 
 
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def mark_all_comments_read(request):
+    """Mark ALL replies-to-my-comments as read (badge inafutika kabisa).
+
+    Inaitwa na Flutter mtumiaji anapobonyeza "Comments" kwenye side menu /
+    profile — ili badge iondoke hata kama replies ziko kwenye videos
+    tofauti-tofauti (sio tu video moja kama mark_video_comments_read).
+    """
+    close_old_connections()
+    marked = (
+        Comment.objects.filter(
+            reply_to__user_id=request.user.id,
+            is_read=False,
+        )
+        .exclude(user=request.user)
+        .update(is_read=True)
+    )
+    return success_response({'marked': marked}, message='OK')
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def unread_comments_count(request):

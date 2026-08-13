@@ -304,6 +304,9 @@ def send_push_notification(self, target: UserGroupTypes, notification_type: Noti
         if video_uid:
             notification_kwargs['target_video_slug'] = str(video_uid)
             notification_kwargs['target_url'] = f'/Player/{video_uid}'
+            # Carry the video cover so the in-app notification list shows the image
+            if metadata and metadata.get('video_thumbnail'):
+                notification_kwargs['thumbnail_url'] = str(metadata['video_thumbnail'])
         
         user.notifications.create(**notification_kwargs)
     
@@ -372,6 +375,7 @@ def notify_user_of_reply(self, commenter_user_id: int, replier_name: str, commen
         title=title,
         message=body,
         type=Notification.NOTIFICATION_TYPES.COMMENT,
+        thumbnail_url=thumbnail_url,
         target_video_slug=str(video_uid),
         target_url=f'/Player/{video_uid}',
     )
