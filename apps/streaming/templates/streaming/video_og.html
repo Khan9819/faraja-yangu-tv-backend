@@ -20,6 +20,36 @@
   <meta name="twitter:description" content="{{ description }}">
   <meta name="twitter:image" content="{{ og_image }}">
 
+  <!-- Structured data: VideoObject — inawezesha rich results za video
+       kwenye Google (video carousel, video tab, "watch" enhancement). -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "VideoObject",
+    "name": "{{ video.title|escapejs }} — Faraja Yangu TV",
+    "description": "{{ description|escapejs }}",
+    "thumbnailUrl": "{{ og_image }}",
+    {% if duration_iso %}"duration": "{{ duration_iso }}",{% endif %}
+    "uploadDate": "{{ video.created_at|date:'c' }}",
+    "contentUrl": "{{ watch_url }}",
+    "embedUrl": "{{ og_url }}",
+    "publisher": {
+      "@type": "Organization",
+      "name": "Faraja Yangu TV",
+      "url": "https://farajayangutv.co.tz/",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://farajayangutv.co.tz/assets/images/Fy-Logo.png"
+      }
+    },
+    "interactionStatistic": {
+      "@type": "InteractionCounter",
+      "interactionType": "http://schema.org/WatchAction",
+      "userInteractionCount": {{ video.views_count|default:0 }}
+    }
+  }
+  </script>
+
   <style>
     :root {
       --emerald-800: #065f46;

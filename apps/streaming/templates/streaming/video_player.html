@@ -29,10 +29,10 @@
   <!-- Static hizi zinaserved na Django yenyewe (same-origin) — siyo R2,
        kwa sababu R2 haina CORS na browser inaziblock (ERR_BLOCKED_BY_ORB)
        ambayo ilivunja player initialization na playback. -->
-  <!-- v=3: cache-busting — ongeza namba hii kila unapobadilisha player JS/CSS
+  <!-- v=4: cache-busting — ongeza namba hii kila unapobadilisha player JS/CSS
        (browser inahifadhi assets kwa saa 24, bila hii users wanaweza kupata ya zamani) -->
-  <link rel="stylesheet" href="{{ asset_base_url }}/js/videojs.ads.min.css?v=3">
-  <link rel="stylesheet" href="{{ asset_base_url }}/js/videojs.ima.min.css?v=3">
+  <link rel="stylesheet" href="{{ asset_base_url }}/js/videojs.ads.min.css?v=4">
+  <link rel="stylesheet" href="{{ asset_base_url }}/js/videojs.ima.min.css?v=4">
 
   <style>
     /* ============================================================
@@ -162,6 +162,24 @@
       aspect-ratio: 16 / 9;
       display: block;
       background: #000;
+    }
+
+    /* ---------- Download protection ----------
+       - Tumia kwa mkono (touch): usifungue menu ya kuhifadhi picha/video.
+       - user-select off kwenye player (usinakili video kwa kudrag). */
+    .player-wrap {
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      -moz-user-select: none;
+      -ms-user-select: none;
+      user-select: none;
+    }
+    .player-wrap video,
+    .player-wrap img {
+      -webkit-user-drag: none;
+      -moz-user-drag: none;
+      user-drag: none;
+      pointer-events: auto;
     }
     .video-js.vjs-fluid { padding-top: 56.25%; }
 
@@ -448,6 +466,11 @@
         controls
         preload="auto"
         {% if cover %}poster="{{ cover }}"{% endif %}
+        controlsList="nodownload noremoteplayback"
+        disablepictureinpicture
+        oncontextmenu="return false;"
+        ondragstart="return false;"
+        onselectstart="return false;"
       >
         <p class="vjs-no-js">
           Kwa kutumia video hii, tafadhali wezesha JavaScript na ubadilishe browser
@@ -551,9 +574,9 @@
     })();
   </script>
   <script src="https://imasdk.googleapis.com/js/sdkloader/ima3.js"></script>
-  <script src="{{ asset_base_url }}/js/videojs.ads.min.js?v=3"></script>
-  <script src="{{ asset_base_url }}/js/videojs.ima.min.js?v=3"></script>
-  <script src="{{ asset_base_url }}/js/video-ad-player.js?v=3"></script>
+  <script src="{{ asset_base_url }}/js/videojs.ads.min.js?v=4"></script>
+  <script src="{{ asset_base_url }}/js/videojs.ima.min.js?v=4"></script>
+  <script src="{{ asset_base_url }}/js/video-ad-player.js?v=4"></script>
 
   <!-- ================================================================
        Website Engagement Tracking (web player)

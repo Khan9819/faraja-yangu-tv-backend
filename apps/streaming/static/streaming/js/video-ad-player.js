@@ -319,6 +319,48 @@
   }
 
   /* ----------------------------------------------------------------
+   * Download protection — zuia njia za kawaida za kuhifadhi video:
+   * right-click "Save video as", drag-drop, na download buttons.
+   * (Hii ni client-side tu — server-side inatumia signed expiring URLs
+   * kukataa IDM na ufikiaji wa moja kwa moja kwenye HLS files.)
+   * ---------------------------------------------------------------- */
+  function initDownloadProtection() {
+    var wrap = document.getElementById('player-wrap');
+    if (!wrap) return;
+
+    // Context menu: zuia kwenye video na control bar ("Save video as..."),
+    // lakini acha vitufe/links (share, close, app CTA) zifanye kazi.
+    wrap.addEventListener('contextmenu', function (e) {
+      var t = e.target;
+      if (t && (t.tagName === 'VIDEO' || (t.closest && t.closest('.vjs-control-bar')))) {
+        e.preventDefault();
+      }
+    });
+
+    // Drag-drop ya video (kuhifadhi kwa kuburuta kwenye desktop).
+    wrap.addEventListener('dragstart', function (e) {
+      e.preventDefault();
+    });
+    wrap.addEventListener('drop', function (e) {
+      e.preventDefault();
+    });
+
+    // Ondoa kitufe cha download kama video.js kitawasha wakati wowote.
+    var unblockDownload = function () {
+      try {
+        if (player && player.controlBar) {
+          var dl = player.controlBar.getChild('downloadButton');
+          if (dl) player.controlBar.removeChild(dl);
+        }
+      } catch (err) { /* noop */ }
+    };
+    unblockDownload();
+    if (player) {
+      player.on('loadedmetadata', unblockDownload);
+    }
+  }
+
+  /* ----------------------------------------------------------------
    * Init
    * ---------------------------------------------------------------- */
   function init() {
@@ -393,6 +435,7 @@
       });
     }
 
+    initDownloadProtection();
     initShare();
   }
 

@@ -1311,6 +1311,18 @@ def stream_hls(request, video_slug, file_path):
     Returns:
         HLS file with appropriate content type and ad markers
     """
+    # Signed URL validation (web player): kama request ina exp+sig, lazima
+    # ziwe valid (token haijakwisha muda na HMAC inalingana). App (Flutter)
+    # inatumia URL bila token → inaendelea kufanya kazi kama ilivyokuwa.
+    # Hii inakataa IDM na ufikiaji wa moja kwa moja kwenye HLS files za
+    # web player baada ya token kukwisha (dakika 20).
+    from apps.streaming.services.hls_service import validate_stream_token
+    exp_param = request.GET.get('exp')
+    sig_param = request.GET.get('sig')
+    has_token = exp_param is not None or sig_param is not None
+    if has_token and not validate_stream_token(video_slug, exp_param or '', sig_param or ''):
+        return HttpResponse('Forbidden', status=403)
+
     try:
         # Construct the full path in R2 storage
         storage_path = f"videos/hls/{video_slug}/{file_path}"
@@ -1350,7 +1362,18 @@ def stream_hls(request, video_slug, file_path):
             # Inject ad markers for variant playlists (not master playlist)
             if '/' in file_path:  # This is a variant playlist like "1080p/1080p.m3u8"
                 modified_content = inject_ad_markers(modified_content, video_slug)
-            
+
+            # Thread signed token kwenye child URLs (variants + segments) ili
+            # kila request ijayo iwe na token sawa — IDM haiwezi kufetch
+            # playlists/segments bila token valid (kama request ya asili ilikuwa
+            # na token). App (bila token) haijaguswa.
+            if has_token:
+                modified_content = '\n'.join(
+                    line if line.startswith('#') or not line.strip()
+                    else (line + ('&' if '?' in line else '?') + f'exp={exp_param}&sig={sig_param}')
+                    for line in modified_content.split('\n')
+                )
+
             # Return modified playlist
             response = HttpResponse(modified_content, content_type=content_type)
         elif file_path.endswith('.ts'):
@@ -1385,11 +1408,16 @@ def stream_hls(request, video_slug, file_path):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def download_video_chunks(request, uid):
     """
     Stream video chunks from R2 as a single downloadable MP4 file.
     Uses StreamingHttpResponse with HTTP Range request support for resume.
+
+    SECURITY: endpoint hii ina-assemble MP4 nzima — lazima mtumiaji
+    aingie (auth). Ilikuwa AllowAny (mtu yeyote aliyejua UID alipata
+    video nzima bila ruhusa) — hiyo ilifungua mlango wa kupakua bila
+    malipo/ruhusa. Flutter app haitumii endpoint hii (inapakua HLS).
     
     Chunks must exist in R2 at: videos/chunks/{video_id}/chunk_0000, chunk_0001, ...
     They are assembled on-the-fly without storing a duplicate MP4.
@@ -2914,7 +2942,16 @@ def watch_video(request, video_id):
         raise Http404('Video haijachakatwa bado — jaribu tena baadaye')
 
     backend_url = getattr(settings, 'BACKEND_URL', None) or getattr(settings, 'BASE_URL', '')
-    stream_url = f"{backend_url}/streaming/hls/{video.uid}/master.m3u8"
+
+    # Signed short-lived HLS URL kwa web player: token inakwisha baada ya
+    # dakika 20, hivyo IDM na links za moja kwa moja hazifanyi kazi kwa
+    # muda mrefu. (Flutter app inatumia URL bila token → haijaguswa.)
+    from apps.streaming.services.hls_service import generate_stream_token
+    sig, expires = generate_stream_token(str(video.uid))
+    stream_url = (
+        f"{backend_url}/streaming/hls/{video.uid}/master.m3u8"
+        f"?exp={expires}&sig={sig}"
+    )
 
     # Cover inarudi kwa fallback chain (thumbnail → portrait_cover →
     # tv_poster → tv_landscape) kama public_video_info inavyofanya.

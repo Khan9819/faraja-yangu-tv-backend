@@ -3,7 +3,10 @@ HLS Service for parsing playlists and generating segment URLs.
 Provides centralized logic for HLS playlist manipulation and segment retrieval.
 """
 import logging
-from typing import List, Optional, Dict
+import hmac
+import hashlib
+import time
+from typing import List, Optional, Dict, Tuple
 import boto3
 from botocore.config import Config
 from django.conf import settings
@@ -11,6 +14,46 @@ from django.core.files.storage import default_storage
 from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
+
+
+def generate_stream_token(video_uid: str, expires_in: int = 1200) -> Tuple[str, int]:
+    """
+    Generate a short-lived HMAC token for the web player HLS stream.
+
+    Kila watch page inapata token yake (inakwisha baada ya expires_in sekunde
+    — default dakika 20). Tokens zinafunga HLS URLs kwa mtumiaji wa web player
+    pekee: IDM/links za moja kwa moja hazifanyi kazi baada ya muda huo.
+
+    Args:
+        video_uid: Video UID (inaingia kwenye message ya HMAC).
+        expires_in: Uhai wa token kwa sekunde (default 1200 = dakika 20).
+
+    Returns:
+        (sig, expires_ts) — sig ni hex HMAC-SHA256, expires_ts ni unix timestamp.
+    """
+    expires = int(time.time()) + expires_in
+    message = f"{video_uid}:{expires}".encode('utf-8')
+    sig = hmac.new(settings.SECRET_KEY.encode('utf-8'), message, hashlib.sha256).hexdigest()
+    return sig, expires
+
+
+def validate_stream_token(video_uid: str, expires: str, sig: str) -> bool:
+    """
+    Validate a stream token (expiry + HMAC signature).
+
+    Inarudisha False kama token imekwisha muda, imeharibika, au hailingani
+    na video_uid hiyo. Hutumika kwenye stream_hls kukataa IDM na ufikiaji
+    wa moja kwa moja kwenye HLS files za web player.
+    """
+    try:
+        exp = int(expires)
+    except (TypeError, ValueError):
+        return False
+    if time.time() > exp:
+        return False
+    message = f"{video_uid}:{exp}".encode('utf-8')
+    expected = hmac.new(settings.SECRET_KEY.encode('utf-8'), message, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, sig)
 
 
 def generate_signed_segment_url(storage_key: str, expires_in: int = 3600) -> str:

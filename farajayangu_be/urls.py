@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.urls import path, include
-from django.http import JsonResponse, Http404
+from django.http import JsonResponse, Http404, HttpResponse
 from django.shortcuts import render, get_object_or_404
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -51,14 +51,66 @@ def video_og_page(request, uid):
     description = (video.description[:280] + '…') if len(video.description) > 280 else video.description
     og_url = request.build_absolute_uri()
     backend_url = getattr(settings, 'BACKEND_URL', None) or getattr(settings, 'BASE_URL', '')
+
+    # Duration ya ISO 8601 (PT#H#M#S) kwa VideoObject JSON-LD rich results.
+    duration_iso = ''
+    if video.duration:
+        total = int(video.duration.total_seconds())
+        h, rem = divmod(total, 3600)
+        m, s = divmod(rem, 60)
+        duration_iso = f'PT{h}H{m}M{s}S' if h else f'PT{m}M{s}S'
+
     return render(request, 'streaming/video_og.html', {
         'video': video,
         'og_image': og_image,
         'og_url': og_url,
         'description': description,
+        'duration_iso': duration_iso,
         'play_store_url': PLAY_STORE_URL,
         'watch_url': f"{backend_url}/watch/{video.uid}/",
     })
+
+
+def public_sitemap(request):
+    """Sitemap XML ya video zote zilizopublished + zilizokamilika.
+
+    Inajenga URLs za public website (farajayangutv.co.tz/video/<uid>/)
+    ili Google/Bing zi-index kila video page — hii ndiyo njia kuu ya
+    "kupublish zaidi" website (kila video inakuwa page yake ya search).
+    """
+    from apps.streaming.models import Video
+    from django.utils import timezone
+    from django.urls import reverse
+
+    domain = 'https://farajayangutv.co.tz'
+    videos = Video.objects.filter(
+        is_published=True,
+        processing_status='completed',
+        is_ad_media=False,
+    ).order_by('-created_at')
+
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+        '  <url>',
+        f'    <loc>{domain}/</loc>',
+        '    <changefreq>daily</changefreq>',
+        '    <priority>1.0</priority>',
+        '  </url>',
+    ]
+    for v in videos:
+        lastmod = getattr(v, 'updated_at', None) or v.created_at
+        lastmod_str = lastmod.strftime('%Y-%m-%d') if lastmod else ''
+        lines.append('  <url>')
+        lines.append(f'    <loc>{domain}/video/{v.uid}/</loc>')
+        if lastmod_str:
+            lines.append(f'    <lastmod>{lastmod_str}</lastmod>')
+        lines.append('    <changefreq>weekly</changefreq>')
+        lines.append('    <priority>0.8</priority>')
+        lines.append('  </url>')
+    lines.append('</urlset>')
+
+    return HttpResponse('\n'.join(lines), content_type='application/xml')
 
 
 @api_view(['GET'])
@@ -306,7 +358,10 @@ def assetlinks(request):
     return JsonResponse(data, safe=False)
 
 urlpatterns = [
-    path('admin/', admin.site.urls),
+    # Django admin imefichwa kwenye path isiyojulikana (CMS ya React ndiyo
+    # inayotumika rasmi; hii ni ya kiufundi tu) — kubadilisha URL inapunguza
+    # scan/brute-force kwenye /admin/.
+    path('fy-admin-console/', admin.site.urls),
     path('authentication/', include('apps.authentication.urls')),
     path('streaming/', include('apps.streaming.urls')),
     path('advertising/', include('apps.advertising.urls')),
@@ -321,6 +376,7 @@ urlpatterns = [
     path('website-posts/', public_website_posts, name='public-website-posts'),
     path('categories-with-cover/', public_categories_with_cover, name='public-categories-with-cover'),
     path('videos-by-category/', public_videos_by_category, name='public-videos-by-category'),
+    path('sitemap.xml', public_sitemap, name='public-sitemap'),
 
     # API variants get their own unique instance namespace so they don't
     # collide with the non-API includes above (fixes urls.W005).
