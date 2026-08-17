@@ -105,6 +105,23 @@
       text-decoration: none;
       font-size: 0.85rem;
     }
+    .fallback-box {
+      display: none;
+      margin-top: 16px;
+      padding: 14px;
+      border: 1px solid rgba(201,120,31,0.45);
+      border-radius: 8px;
+      background: rgba(201,120,31,0.08);
+    }
+    .fallback-box p {
+      color: var(--gold-bright);
+      font-size: 0.85rem;
+      margin-bottom: 10px;
+    }
+    .fallback-box .btn {
+      font-size: 0.9rem;
+      padding: 10px 24px;
+    }
   </style>
   <script>
     (function() {
@@ -120,14 +137,32 @@
       var isIOS = /iphone|ipad|ipod/i.test(ua);
 
       if (isAndroid) {
-        // Smart deep link: app ikiwa imesakinishwa inafunguka moja kwa moja
-        // (farajatv:// scheme, package imebainishwa). App isipokuwa hapo,
-        // browser inaelekeza kwenye Play Store (kama ilivyotakiwa).
-        var fallback = playStore;
-        var intent = 'intent://video/' + uid + '/#Intent;' +
-          'scheme=farajatv;package=co.tz.farajayangutv.app;' +
-          'S.browser_fallback_url=' + encodeURIComponent(fallback) + ';end';
-        setTimeout(function () { window.location.href = intent; }, 700);
+        // intent:// inafanya kazi kwenye Chrome/Samsung/Chromium pekee na
+        // ina fallback yake ya Play Store yenyewe (app ipo → inafunguka;
+        // haipo → Play Store). Firefox na in-app browsers hazitambui
+        // intent:// — kwa hizo tumia farajatv:// moja kwa moja.
+        var supportsIntent = /chrome|crios|samsung|chromium|edg/i.test(ua) && !/firefox/i.test(ua);
+        var openUrl = supportsIntent
+          ? 'intent://video/' + uid + '/#Intent;' +
+            'scheme=farajatv;package=co.tz.farajayangutv.app;' +
+            'S.browser_fallback_url=' + encodeURIComponent(playStore) + ';end'
+          : 'farajatv://video/' + uid + '/';
+
+        setTimeout(function () {
+          window.location.href = openUrl;
+          // Kwa browsers zisizotambua intent://: kama app haijafunguka
+          // (page bado iko mbele), onyesha fallback ya Play Store badala ya
+          // kumlazimisha mtumiaji kwenda huko — mwenye app asije akapelekwa
+          // Play Store kimakosa.
+          if (!supportsIntent) {
+            setTimeout(function () {
+              if (!document.hidden) {
+                var fb = document.getElementById('play-store-fallback');
+                if (fb) fb.style.display = 'block';
+              }
+            }, 1500);
+          }
+        }, 700);
       } else if (isIOS) {
         // iPhone hawana app ya Android — peleka kwenye web player.
         if (watchUrl) {
@@ -155,10 +190,14 @@
     <br>
     {% endif %}
     <a class="btn-secondary" id="play-store-btn" href="{{ play_store_url }}">Pakua app kutoka Google Play</a>
+    <div class="fallback-box" id="play-store-fallback">
+      <p>App haijafunguka? Hakikisha umeisakinisha, au pakua kutoka Play Store:</p>
+      <a class="btn" href="{{ play_store_url }}">Pakua Faraja Yangu TV</a>
+    </div>
   </div>
   <script>
     // Vitufe vinabadilishwa kulingana na device (Android → app/Play Store,
-    // iOS → web player) ikiwa auto-redirect haikufanya kazi.
+    // iOS → web player) ikiwa auto-open haikufanya kazi.
     (function () {
       var ua = navigator.userAgent.toLowerCase();
       if (/bot|crawl|spider|preview|embed|scrape/i.test(ua)) return;
@@ -171,12 +210,15 @@
       var webBtn = document.getElementById('watch-web-btn');
 
       if (isAndroid) {
-        // App ipo → inafunguka; haipo → Play Store (button ina fallback hiyo hiyo).
-        var fallback = playStore;
-        var intent = 'intent://video/' + uid + '/#Intent;' +
-          'scheme=farajatv;package=co.tz.farajayangutv.app;' +
-          'S.browser_fallback_url=' + encodeURIComponent(fallback) + ';end';
-        if (openBtn) openBtn.href = intent;
+        // Chrome/Samsung/Chromium → intent:// (ina fallback ya Play Store).
+        // Firefox na in-app browsers → farajatv:// moja kwa moja.
+        var supportsIntent = /chrome|crios|samsung|chromium|edg/i.test(ua) && !/firefox/i.test(ua);
+        var bestUrl = supportsIntent
+          ? 'intent://video/' + uid + '/#Intent;' +
+            'scheme=farajatv;package=co.tz.farajayangutv.app;' +
+            'S.browser_fallback_url=' + encodeURIComponent(playStore) + ';end'
+          : 'farajatv://video/' + uid + '/';
+        if (openBtn) openBtn.href = bestUrl;
       } else if (isIOS && watchUrl && webBtn) {
         // iOS: kitufe kikuu → web player (sio Play Store isiyofaa iPhone)
         openBtn.href = watchUrl;
