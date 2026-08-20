@@ -599,8 +599,14 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
                     raise Exception(conversion_result.get('error', 'Unknown conversion error'))
             else:
                 logger.info(f"Resuming: HLS files already exist locally for {video_id}")
-                # Get duration from existing files
-                conversion_result = {'success': True, 'duration': 0}  # Duration will be recalculated if needed
+                # Extract duration from original video file via ffprobe
+                resume_duration = 0
+                try:
+                    resume_duration = processor._get_video_duration()
+                    logger.info(f"Resume: extracted duration {resume_duration}s from original video")
+                except Exception as dur_err:
+                    logger.warning(f"Resume: could not extract duration: {dur_err}")
+                conversion_result = {'success': True, 'duration': resume_duration}
             
             send_video_progress(video_id, "uploading", CONVERSION_END, "Conversion complete, uploading HLS files...",
                                checkpoint={'stage': 'uploading'})
@@ -662,8 +668,18 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
         # Update video object with HLS information
         video.hls_path = hls_output_dir
         video.hls_master_playlist = f"{hls_output_dir}/master.m3u8"
-        if conversion_result and conversion_result.get('duration'):
+        if conversion_result and conversion_result.get('duration') is not None and conversion_result['duration'] > 0:
             video.duration = timedelta(seconds=conversion_result['duration'])
+            logger.info(f"Video duration set to {video.duration} from conversion result")
+        elif not video.duration and video.hls_master_playlist:
+            # Fallback: extract duration from original file if still missing
+            try:
+                fallback_dur = processor._get_video_duration()
+                if fallback_dur > 0:
+                    video.duration = timedelta(seconds=fallback_dur)
+                    logger.info(f"Video duration set to {video.duration} via fallback ffprobe")
+            except Exception as fb_err:
+                logger.warning(f"Fallback duration extraction failed: {fb_err}")
         video.processing_status = 'completed'
         video.processing_error = None
         video.processing_checkpoint = None  # Clear checkpoint
@@ -1637,3 +1653,89 @@ def import_video_from_google_drive(self, video_id: int, google_drive_url: str):
             pass
 
         raise
+
+
+@shared_task(bind=True, max_retries=1)
+def fix_video_durations(self):
+    """
+    One-off / periodic task to fix videos where duration is 0 or None
+    but HLS conversion is completed. Uses ffprobe on the original file
+    (if still available) or falls back to parsing the HLS master playlist.
+    """
+    from django.utils import timezone as tz
+
+    videos = Video.objects.filter(
+        processing_status='completed',
+        hls_master_playlist__isnull=False,
+    ).filter(
+        # duration is 0 or NULL
+        duration__isnull=True,
+    ) | Video.objects.filter(
+        processing_status='completed',
+        hls_master_playlist__isnull=False,
+        duration=timedelta(0),
+    )
+
+    # deduplicate
+    video_ids = set(v.id for v in videos)
+    if not video_ids:
+        logger.info("fix_video_durations: no videos need fixing")
+        return {'fixed': 0}
+
+    fixed = 0
+    for vid in Video.objects.filter(id__in=video_ids):
+        try:
+            # Try ffprobe on original file if it still exists on R2
+            if vid.video and hasattr(vid.video, 'path') and os.path.exists(vid.video.path):
+                processor = VideoProcessor(
+                    input_path=vid.video.path,
+                    output_dir=f"/tmp/hls_fix_{vid.uid}",
+                    video_id=str(vid.uid),
+                )
+                duration_secs = processor._get_video_duration()
+                if duration_secs > 0:
+                    vid.duration = timedelta(seconds=duration_secs)
+                    vid.save(update_fields=['duration'])
+                    fixed += 1
+                    logger.info(f"fix_video_durations: fixed {vid.uid} -> {duration_secs}s")
+                    continue
+
+            # Fallback: try to parse duration from HLS playlist
+            hls_path = vid.hls_master_playlist
+            if hls_path:
+                try:
+                    # Download master playlist to get total duration from segments
+                    if default_storage.exists(hls_path):
+                        import tempfile
+                        with tempfile.NamedTemporaryFile(suffix='.m3u8', delete=False) as tmp:
+                            content = default_storage.open(hls_path).read()
+                            if isinstance(content, str):
+                                content = content.encode()
+                            tmp.write(content)
+                            tmp_path = tmp.name
+
+                        total_dur = 0.0
+                        with open(tmp_path, 'r') as f:
+                            for line in f:
+                                line = line.strip()
+                                if line.startswith('#EXTINF:'):
+                                    seg_dur = float(line.split(':')[1].split(',')[0].strip())
+                                    total_dur += seg_dur
+                        os.unlink(tmp_path)
+
+                        if total_dur > 0:
+                            vid.duration = timedelta(seconds=total_dur)
+                            vid.save(update_fields=['duration'])
+                            fixed += 1
+                            logger.info(f"fix_video_durations: fixed {vid.uid} from HLS -> {total_dur:.1f}s")
+                            continue
+                except Exception as hls_err:
+                    logger.warning(f"fix_video_durations: HLS parse failed for {vid.uid}: {hls_err}")
+
+            logger.warning(f"fix_video_durations: could not fix duration for {vid.uid}")
+
+        except Exception as e:
+            logger.error(f"fix_video_durations: error fixing {vid.uid}: {e}")
+
+    logger.info(f"fix_video_durations: fixed {fixed}/{len(video_ids)} videos")
+    return {'fixed': fixed, 'total': len(video_ids)}
