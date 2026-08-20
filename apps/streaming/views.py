@@ -920,7 +920,7 @@ def get_chunk_upload_url(request):
             config=Config(signature_version='s3v4')
         )
         
-        presigned_expiry = getattr(settings, 'CHUNK_UPLOAD_URL_EXPIRY', 300)  # 5 minutes default
+        presigned_expiry = getattr(settings, 'CHUNK_UPLOAD_URL_EXPIRY', 900)  # 15 minutes default
         
         presigned_url = s3_client.generate_presigned_url(
             'put_object',
