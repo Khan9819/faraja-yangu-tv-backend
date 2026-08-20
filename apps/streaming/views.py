@@ -2879,6 +2879,116 @@ def retry_conversion(request, video_id):
     })
 
 
+@api_view(['POST'])
+@permission_classes([IsAdminUser])
+def fix_durations_endpoint(request):
+    """
+    Fix video durations that are 0 or null.
+    Runs synchronously and returns results.
+    """
+    from datetime import timedelta
+    from apps.streaming.services.video_processor import VideoProcessor
+    import tempfile
+    import os
+    from django.core.files.storage import default_storage
+
+    videos = Video.objects.filter(
+        processing_status='completed',
+        hls_master_playlist__isnull=False,
+    ).filter(
+        duration__isnull=True,
+    ) | Video.objects.filter(
+        processing_status='completed',
+        hls_master_playlist__isnull=False,
+        duration=timedelta(0),
+    )
+
+    video_ids = set(v.id for v in videos)
+    if not video_ids:
+        return success_response({'fixed': 0, 'message': 'No videos need fixing'})
+
+    fixed = 0
+    errors = []
+    for vid in Video.objects.filter(id__in=video_ids):
+        try:
+            # Try HLS playlist parsing (most reliable)
+            if vid.hls_master_playlist:
+                hls_path = vid.hls_master_playlist
+                # Extract the relative path from the URL
+                if '/streaming/hls/' in hls_path:
+                    hls_key = hls_path.split('/streaming/hls/')[-1].split('?')[0]
+                else:
+                    hls_key = hls_path
+
+                # Find the 480p variant playlist
+                variant_path = f'streaming/hls/{hls_key.rsplit("/", 1)[0]}/480p/480p.m3u8' if '/' in hls_key else None
+                if not variant_path:
+                    # Try direct path
+                    variant_path = f'streaming/hls/{hls_key.replace("/master.m3u8", "/480p/480p.m3u8")}'
+
+                total_dur = 0.0
+                try:
+                    if default_storage.exists(variant_path):
+                        content = default_storage.open(variant_path).read()
+                        if isinstance(content, bytes):
+                            content = content.decode('utf-8')
+                        for line in content.split('\n'):
+                            line = line.strip()
+                            if line.startswith('#EXTINF:'):
+                                seg_dur = float(line.split(':')[1].split(',')[0].strip())
+                                total_dur += seg_dur
+                except Exception:
+                    pass
+
+                if total_dur <= 0:
+                    # Try master playlist → find first variant → parse it
+                    try:
+                        if default_storage.exists(hls_key):
+                            master_content = default_storage.open(hls_key).read()
+                            if isinstance(master_content, bytes):
+                                master_content = master_content.decode('utf-8')
+                            for line in master_content.split('\n'):
+                                line = line.strip()
+                                if line.endswith('.m3u8') and not line.startswith('#'):
+                                    # Found a variant URL
+                                    variant_url = line
+                                    if not variant_url.startswith('http'):
+                                        # Relative URL - construct full path
+                                        base_dir = '/'.join(hls_key.split('/')[:-1])
+                                        variant_full = f'{base_dir}/{variant_url}'
+                                        if default_storage.exists(variant_full):
+                                            v_content = default_storage.open(variant_full).read()
+                                            if isinstance(v_content, bytes):
+                                                v_content = v_content.decode('utf-8')
+                                            for vl in v_content.split('\n'):
+                                                vl = vl.strip()
+                                                if vl.startswith('#EXTINF:'):
+                                                    seg_dur = float(vl.split(':')[1].split(',')[0].strip())
+                                                    total_dur += seg_dur
+                                            if total_dur > 0:
+                                                break
+                    except Exception:
+                        pass
+
+                if total_dur > 0:
+                    vid.duration = timedelta(seconds=total_dur)
+                    vid.save(update_fields=['duration'])
+                    fixed += 1
+                    logger.info(f'fix_durations: fixed {vid.uid} -> {total_dur:.1f}s')
+                    continue
+
+            errors.append({'uid': str(vid.uid), 'title': vid.title, 'error': 'Could not determine duration'})
+
+        except Exception as e:
+            errors.append({'uid': str(vid.uid), 'title': vid.title, 'error': str(e)})
+
+    return success_response({
+        'fixed': fixed,
+        'total': len(video_ids),
+        'errors': errors,
+    })
+
+
 # //////////////////////////////////////////////////////////////////// #
 # /////////// WEB PLAYER (templates) — READ-ONLY, haina API logic ////// #
 

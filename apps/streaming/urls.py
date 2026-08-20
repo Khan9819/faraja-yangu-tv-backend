@@ -97,4 +97,7 @@ urlpatterns = [
 
     # Retry failed/stuck video conversion
     path('retry-conversion/<int:video_id>/', views.retry_conversion, name='retry-conversion'),
+    
+    # Fix video durations (admin only)
+    path('fix-durations/', views.fix_durations_endpoint, name='fix-durations'),
 ]
