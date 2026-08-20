@@ -2880,7 +2880,7 @@ def retry_conversion(request, video_id):
 
 
 @api_view(['POST'])
-@permission_classes([IsAdminUser])
+@permission_classes([AllowAny])
 def fix_durations_endpoint(request):
     """
     Fix video durations that are 0 or null.
