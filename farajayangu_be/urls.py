@@ -327,6 +327,15 @@ def public_videos_by_category(request):
     return success_response(result)
 
 
+def backend_root(request):
+    """Root endpoint — returns JSON status to prevent404 on backend domain."""
+    return success_response({
+        'status': 'ok',
+        'service': 'Faraja Yangu TV Backend API',
+        'docs': '/api/streaming/',
+    })
+
+
 def assetlinks(request):
     """Android App Links verification file.
 
@@ -358,6 +367,8 @@ def assetlinks(request):
     return JsonResponse(data, safe=False)
 
 urlpatterns = [
+    # Root endpoint — prevents404 on backend.farajayangutv.co.tz/
+    path('', backend_root, name='backend-root'),
     # Django admin imefichwa kwenye path isiyojulikana (CMS ya React ndiyo
     # inayotumika rasmi; hii ni ya kiufundi tu) — kubadilisha URL inapunguza
     # scan/brute-force kwenye /admin/.
