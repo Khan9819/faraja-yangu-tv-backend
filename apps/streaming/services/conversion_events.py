@@ -154,7 +154,7 @@ def _handle_complete(video: Video, msg: dict) -> None:
     }
 
     duration_seconds = msg.get("duration_seconds")
-    if duration_seconds:
+    if duration_seconds is not None and duration_seconds > 0:
         update_fields["duration"] = timedelta(seconds=duration_seconds)
 
     Video.objects.filter(id=video.id).update(**update_fields)

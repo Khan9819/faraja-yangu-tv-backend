@@ -700,6 +700,44 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
         
         logger.info(f"Video {video_id} metadata updated successfully")
         
+        # SAFETY NET: If duration is still null/0, extract from HLS playlist
+        if not video.duration or video.duration == timedelta(0):
+            logger.warning(f"Video {video_id} still has no duration after conversion — extracting from HLS")
+            try:
+                # Parse the 480p variant playlist for total duration
+                import tempfile
+                from django.core.files.storage import default_storage as storage
+                
+                hls_rel = video.hls_master_playlist
+                if '/streaming/hls/' in hls_rel:
+                    hls_key = hls_rel.split('/streaming/hls/')[-1].split('?')[0]
+                else:
+                    hls_key = hls_rel
+                
+                base_dir = '/'.join(hls_key.split('/')[:-1])
+                variant_path = f'streaming/hls/{base_dir.split("/")[-1]}/480p/480p.m3u8'
+                
+                total_dur = 0.0
+                if storage.exists(variant_path):
+                    content = storage.open(variant_path).read()
+                    if isinstance(content, bytes):
+                        content = content.decode('utf-8')
+                    for line in content.split('\n'):
+                        line = line.strip()
+                        if line.startswith('#EXTINF:'):
+                            seg_dur = float(line.split(':')[1].split(',')[0].strip())
+                            total_dur += seg_dur
+                
+                if total_dur > 0:
+                    video.refresh_from_db()
+                    video.duration = timedelta(seconds=total_dur)
+                    video.save(update_fields=['duration'])
+                    logger.info(f"Video {video_id} duration set to {video.duration} from HLS safety net")
+                else:
+                    logger.error(f"Video {video_id}: safety net could not extract duration from HLS")
+            except Exception as safety_err:
+                logger.error(f"Video {video_id}: safety net duration extraction failed: {safety_err}")
+        
         # Clean up: Delete original video file from R2 if it exists (legacy support)
         if video.video:
             try:
