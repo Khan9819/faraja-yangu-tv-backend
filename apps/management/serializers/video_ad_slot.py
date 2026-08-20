@@ -191,6 +191,16 @@ class VideoAdSlotCreateSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         categories = validated_data.pop('categories', None)
+        content_video = validated_data.get('content_video')
+        # Ensure content_video has a default category so it doesn't appear
+        # as 'uncategorized' in the main video list. Use the first available
+        # category or leave it (is_ad_media=True already hides it from lists).
+        if content_video and not content_video.category_id:
+            from apps.streaming.models import Category
+            default_cat = Category.objects.order_by('id').first()
+            if default_cat:
+                content_video.category = default_cat
+                content_video.save(update_fields=['category'])
         instance = super().create(validated_data)
         if categories is not None:
             instance.categories.set(categories)

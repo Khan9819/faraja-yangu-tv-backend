@@ -1831,12 +1831,20 @@ def interceptor_ads(request, video_uid):
         if slot.content_video:
             # HLS-converted video ad via content_video FK
             media_type = "VIDEO"
+            video_url = None
+            # Priority 1: HLS master playlist (processed + completed)
             if slot.content_video.hls_master_playlist and slot.content_video.processing_status == 'completed':
                 video_url = f"{backend_url}/streaming/hls/{slot.content_video.uid}/master.m3u8"
+            # Priority 2: Original video file (not yet converted)
             elif slot.content_video.video:
-                video_url = request.build_absolute_uri(slot.content_video.video.url)
-            else:
-                video_url = None
+                try:
+                    video_url = request.build_absolute_uri(slot.content_video.video.url)
+                except Exception:
+                    video_url = None
+            # Priority 3: content_video exists but no playable source yet
+            # Skip this slot entirely — ad would show with no media
+            if not video_url:
+                continue
             image_url = slot.content_video.thumbnail.url if slot.content_video.thumbnail else None
             total_seconds = int(slot.content_video.duration.total_seconds()) if slot.content_video.duration else 15
             click_url = slot.redirect_link
