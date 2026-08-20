@@ -329,11 +329,7 @@ def public_videos_by_category(request):
 
 def backend_root(request):
     """Root endpoint — returns JSON status to prevent404 on backend domain."""
-    return success_response({
-        'status': 'ok',
-        'service': 'Faraja Yangu TV Backend API',
-        'docs': '/api/streaming/',
-    })
+    return JsonResponse({'status': 'ok', 'service': 'Faraja Yangu TV Backend API'})
 
 
 def assetlinks(request):
