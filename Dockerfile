@@ -44,6 +44,10 @@ RUN python3.12 -m pip install --break-system-packages --ignore-installed "sentry
 # Add xiron to Python path
 ENV PYTHONPATH="/app:${PYTHONPATH}"
 
+# Force rebuild: 2026-08-21 scheduled publishing fix
+ARG BUILD_DATE
+ENV BUILD_DATE=${BUILD_DATE}
+
 # Copy application code (after dependencies are installed)
 COPY . /app
 
