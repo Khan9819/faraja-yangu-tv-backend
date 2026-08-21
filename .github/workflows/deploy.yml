@@ -12,16 +12,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Create deploy tarball
-        run: |
-          tar -czf captain-definition.tar.gz \
-            --exclude='.git' \
-            --exclude='__pycache__' \
-            --exclude='*.pyc' \
-            --exclude='.env' \
-            --exclude='node_modules' \
-            --exclude='.venv' \
-            --exclude='venv' \
-            .
+        run: tar -czf captain-definition.tar.gz .
 
       - name: Deploy to CapRover
         env:
@@ -30,14 +21,11 @@ jobs:
           CAPROVER_PASSWORD: ${{ secrets.CAPROVER_PASSWORD }}
         run: |
           echo "=== Deploying Backend to CapRover ==="
-          echo "Server: $CAPROVER_URL"
-          echo "App: $CAPROVER_APP_NAME"
 
-          # Get auth token
           TOKEN=$(curl -sS -X POST "$CAPROVER_URL/api/v2/login" \
             -H "Content-Type: application/json" \
             -d "{\"password\": \"$CAPROVER_PASSWORD\"}" \
-            | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
+            | python -c "import json,sys; print(json.load(sys.stdin)['data']['token'])")
 
           if [ -z "$TOKEN" ]; then
             echo "ERROR: Failed to get auth token"
@@ -46,7 +34,6 @@ jobs:
 
           echo "Auth token obtained"
 
-          # Deploy tarball
           RESPONSE=$(curl -sS -X POST "$CAPROVER_URL/api/v2/apps/deploy" \
             -H "Authorization: Bearer $TOKEN" \
             -F "appName=$CAPROVER_APP_NAME" \
