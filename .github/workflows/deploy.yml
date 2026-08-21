@@ -6,19 +6,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      # CapRover's deploy-from-github action expects a ./deploy.tar at the
-      # repo root containing the app files plus captain-definition.
-      - name: Create deploy tarball
+      - name: Trigger CapRover Build
         run: |
-          # Write to /tmp first so the repo dir doesn't change while tar reads it.
-          tar --exclude='./.git' --exclude='./.github' -czf /tmp/deploy.tar .
-          mv /tmp/deploy.tar ./deploy.tar
-
-      - name: Deploy to CapRover
-        uses: caprover/deploy-from-github@v1.2.0
-        with:
-          server: '${{ secrets.CAPROVER_SERVER }}'
-          app: '${{ secrets.CAPROVER_APP_BACKEND }}'
-          token: '${{ secrets.CAPROVER_APP_TOKEN }}'
+          curl -sS -X POST "${{ secrets.CAPROVER_WEBHOOK_URL }}" --max-time 30
+          echo "✅ CapRover build triggered for Backend"
