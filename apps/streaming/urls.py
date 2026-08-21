@@ -100,4 +100,8 @@ urlpatterns = [
     
     # Fix video durations (admin only)
     path('fix-durations/', views.fix_durations_endpoint, name='fix-durations'),
+    
+    # Scheduled publishing
+    path('scheduled-videos/', views.scheduled_videos, name='scheduled-videos'),
+    path('publish-now/<int:video_id>/', views.publish_now, name='publish-now'),
 ]

@@ -3115,3 +3115,73 @@ def watch_video(request, video_id):
         # siyo R2 — kwa sababu R2 haina CORS na browser inaziblock (ORB).
         'asset_base_url': f"{backend_url}/player-assets",
     })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def scheduled_videos(request):
+    """List videos waiting to be published (scheduled_at in the future).
+    
+    Returns videos where:
+      - scheduled_at is not None
+      - is_published == False
+      - processing_status == 'completed'
+    """
+    videos = Video.objects.filter(
+        scheduled_at__isnull=False,
+        is_published=False,
+        processing_status='completed',
+        is_ad_media=False,
+    ).select_related('category', 'uploaded_by').order_by('scheduled_at')
+    
+    serializer = VideoSerializer(videos, many=True)
+    return success_response(serializer.data)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def publish_now(request, video_id):
+    """Manually publish a scheduled video immediately.
+    
+    Sets is_published=True, published_at=now, and triggers notification.
+    """
+    from django.utils import timezone
+    from apps.streaming.tasks.tasks import send_push_notification, UserGroupTypes, NotificationTypes, _video_notification_image
+    
+    try:
+        video = Video.objects.get(id=video_id)
+    except Video.DoesNotExist:
+        return error_response('Video not found', code=404)
+    
+    now = timezone.now()
+    video.is_published = True
+    video.published_at = now
+    video.save(update_fields=['is_published', 'published_at'])
+    
+    # Send notification
+    category_name = getattr(video.category, 'name', 'Uncategorized') if video.category else 'Uncategorized'
+    thumbnail_url = _video_notification_image(video)
+    
+    notification_metadata = {
+        'type': 'video_upload',
+        'video_id': str(video.uid),
+        'db_video_id': video.id,
+        'video_title': video.title or '',
+        'video_thumbnail': thumbnail_url,
+        'video_category': category_name,
+        'video_description': video.description or '',
+        'video_duration': str(int(video.duration.total_seconds())) if video.duration else '0',
+        'video_created_at': video.created_at.isoformat() if video.created_at else '',
+        'master_playlist': f'/streaming/hls/{video.uid}/master.m3u8' if video.hls_master_playlist else '',
+        'badge_type': 'NEW',
+    }
+    
+    send_push_notification.delay(
+        UserGroupTypes.CLIENTS,
+        NotificationTypes.NEW_VIDEO,
+        title=f"{category_name} | {video.title}",
+        message=f"new {category_name} Video | {video.title}",
+        metadata=notification_metadata,
+    )
+    
+    return success_response({'message': f'Video "{video.title}" published successfully'})
