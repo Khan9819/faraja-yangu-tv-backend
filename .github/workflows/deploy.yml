@@ -1,16 +1,62 @@
 name: Deploy Backend to CapRover
+
 on:
   push:
     branches: [master]
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create deploy tarball
+        run: |
+          tar -czf captain-definition.tar.gz \
+            --exclude='.git' \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            --exclude='.env' \
+            --exclude='node_modules' \
+            --exclude='.venv' \
+            --exclude='venv' \
+            .
 
       - name: Deploy to CapRover
-        uses: caprover/deploy-from-github@v1.2.0
-        with:
-          server: ${{ secrets.CAPROVER_URL }}
-          app: ${{ secrets.CAPROVER_APP_NAME }}
-          password: ${{ secrets.CAPROVER_PASSWORD }}
+        env:
+          CAPROVER_URL: ${{ secrets.CAPROVER_URL }}
+          CAPROVER_APP_NAME: ${{ secrets.CAPROVER_APP_NAME }}
+          CAPROVER_PASSWORD: ${{ secrets.CAPROVER_PASSWORD }}
+        run: |
+          echo "=== Deploying Backend to CapRover ==="
+          echo "Server: $CAPROVER_URL"
+          echo "App: $CAPROVER_APP_NAME"
+
+          # Get auth token
+          TOKEN=$(curl -sS -X POST "$CAPROVER_URL/api/v2/login" \
+            -H "Content-Type: application/json" \
+            -d "{\"password\": \"$CAPROVER_PASSWORD\"}" \
+            | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
+
+          if [ -z "$TOKEN" ]; then
+            echo "ERROR: Failed to get auth token"
+            exit 1
+          fi
+
+          echo "Auth token obtained"
+
+          # Deploy tarball
+          RESPONSE=$(curl -sS -X POST "$CAPROVER_URL/api/v2/apps/deploy" \
+            -H "Authorization: Bearer $TOKEN" \
+            -F "appName=$CAPROVER_APP_NAME" \
+            -F "tarFile=@captain-definition.tar.gz")
+
+          echo "Deploy response: $RESPONSE"
+
+          if echo "$RESPONSE" | grep -q '"status":1'; then
+            echo "✅ Deploy successful!"
+          else
+            echo "❌ Deploy failed"
+            exit 1
+          fi
