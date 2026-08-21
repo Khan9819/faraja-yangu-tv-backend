@@ -7,3 +7,25 @@ __pycache__/
 *.sqlite3
 .env
 media/
+
+# Utility scripts (local dev/debug only)
+check_hls.py
+check_hls_files.py
+check_last_video.py
+check_logo.py
+check_pending.py
+check_thumb_url.py
+check_thumbs.py
+check_urls.py
+cleanup_server_media.py
+db_check.py
+find_fcm.py
+get_thumbnail.py
+get_tokens.py
+query_fcm_tokens.py
+run_migration.py
+send_push_with_thumb.py
+ssh_fix.py
+ssh_migrate.py
+verify_api.py
+verify_fcm_fix.py
