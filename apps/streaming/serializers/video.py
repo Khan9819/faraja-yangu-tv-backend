@@ -28,6 +28,7 @@ class VideoSerializer(serializers.ModelSerializer):
             'created_at',
             'master_playlist',
             'starter_segments',
+            'published_at',
         ]
 
     def get_master_playlist(self, obj):
@@ -113,6 +114,8 @@ class VideoFeedSerializer(serializers.ModelSerializer):
             'parent_category_name',
             'master_playlist',
             'starter_segments',
+            'scheduled_at',
+            'published_at',
         ]
 
     def get_parent_category_id(self, obj):

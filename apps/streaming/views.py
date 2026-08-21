@@ -1284,7 +1284,15 @@ def create_video(request):
     HLS conversion is triggered later by assemble_chunks.
     """
     data = {key: value for key, value in request.data.items()}
-    data['is_published'] = request.data.get('status', 'draft') == 'published'
+    
+    # Handle scheduled publishing
+    scheduled_at = request.data.get('scheduled_at')
+    if scheduled_at:
+        # If scheduled, video starts as unpublished until scheduled_at arrives
+        data['is_published'] = False
+    else:
+        data['is_published'] = request.data.get('status', 'draft') == 'published'
+    
     data['uploaded_by'] = request.user.id
 
     serializer = VideoSerializer(data=data)
@@ -1663,7 +1671,14 @@ def update_video(request, pk):
     uploaded_by = video.uploaded_by.id
     data = { key: value for key, value in request.data.items() }
     data['uploaded_by'] = uploaded_by
-    data['is_published'] = request.data.get('status', 'draft') == 'published'
+    
+    # Handle scheduled publishing
+    scheduled_at = request.data.get('scheduled_at')
+    if scheduled_at:
+        data['is_published'] = False
+    else:
+        data['is_published'] = request.data.get('status', 'draft') == 'published'
+    
     serializer = VideoSerializer(video, data=data)
     if serializer.is_valid():
         serializer.save()

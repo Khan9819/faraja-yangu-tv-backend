@@ -767,6 +767,26 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
         # the notification always carries an image when any cover exists.
         thumbnail_url = _video_notification_image(video)
         
+        # Skip notification if video is scheduled for later
+        video.refresh_from_db()
+        now = datetime.now(timezone.utc)
+        if video.scheduled_at and video.scheduled_at > now:
+            logger.info(f"Video {video_id} is scheduled for {video.scheduled_at} — skipping notification")
+            # Ensure video stays unpublished until scheduled_at
+            if video.is_published:
+                video.is_published = False
+                video.save(update_fields=['is_published'])
+            db_queue.stop(timeout=10)
+            cache.delete(lock_key)
+            return {
+                'success': True,
+                'video_id': video_id,
+                'hls_path': hls_output_dir,
+                'duration': conversion_result.get('duration', 0) if conversion_result else 0,
+                'scheduled': True,
+                'scheduled_at': str(video.scheduled_at),
+            }
+        
         notification_metadata = {
             'type': 'video_upload',
             'video_id': str(video.uid),
@@ -778,6 +798,7 @@ def convert_video_to_hls(self, video_id: int, local_video_path: str = None):
             'video_duration': str(int(video.duration.total_seconds())) if video.duration else '0',
             'video_created_at': video.created_at.isoformat() if video.created_at else '',
             'master_playlist': f'/streaming/hls/{video.uid}/master.m3u8' if video.hls_master_playlist else '',
+            'badge_type': 'NEW',
         }
         
         send_push_notification.delay(
@@ -1777,3 +1798,72 @@ def fix_video_durations(self):
 
     logger.info(f"fix_video_durations: fixed {fixed}/{len(video_ids)} videos")
     return {'fixed': fixed, 'total': len(video_ids)}
+
+
+@shared_task(bind=True, max_retries=2)
+def publish_scheduled_videos(self):
+    """Publish videos whose scheduled_at time has arrived.
+    
+    Runs every minute via Celery Beat. For each video where:
+      - scheduled_at is not None
+      - scheduled_at <= now
+      - is_published == False
+      - processing_status == 'completed'
+    It publishes the video and sends a push notification.
+    """
+    close_old_connections()
+    now = datetime.now(timezone.utc)
+    
+    videos_to_publish = Video.objects.filter(
+        scheduled_at__isnull=False,
+        scheduled_at__lte=now,
+        is_published=False,
+        processing_status='completed',
+        is_ad_media=False,
+    )
+    
+    published_count = 0
+    
+    for video in videos_to_publish:
+        try:
+            # Publish the video
+            video.is_published = True
+            video.published_at = now
+            video.save(update_fields=['is_published', 'published_at'])
+            
+            # Send push notification
+            category_name = getattr(video.category, 'name', 'Uncategorized') if video.category else 'Uncategorized'
+            thumbnail_url = _video_notification_image(video)
+            
+            notification_metadata = {
+                'type': 'video_upload',
+                'video_id': str(video.uid),
+                'db_video_id': video.id,
+                'video_title': video.title or '',
+                'video_thumbnail': thumbnail_url,
+                'video_category': category_name,
+                'video_description': video.description or '',
+                'video_duration': str(int(video.duration.total_seconds())) if video.duration else '0',
+                'video_created_at': video.created_at.isoformat() if video.created_at else '',
+                'master_playlist': f'/streaming/hls/{video.uid}/master.m3u8' if video.hls_master_playlist else '',
+                'badge_type': 'NEW',
+            }
+            
+            send_push_notification.delay(
+                UserGroupTypes.CLIENTS,
+                NotificationTypes.NEW_VIDEO,
+                title=f"{category_name} | {video.title}",
+                message=f"new {category_name} Video | {video.title}",
+                metadata=notification_metadata,
+            )
+            
+            published_count += 1
+            logger.info(f"publish_scheduled: Published video {video.id} '{video.title}' (scheduled_at={video.scheduled_at})")
+            
+        except Exception as e:
+            logger.error(f"publish_scheduled: Failed to publish video {video.id}: {e}")
+    
+    if published_count > 0:
+        logger.info(f"publish_scheduled: Published {published_count} scheduled videos")
+    
+    return {'published': published_count}

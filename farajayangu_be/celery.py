@@ -32,4 +32,8 @@ app.conf.beat_schedule = {
         'task': 'apps.streaming.tasks.conversion_monitor.mark_stale_conversions',
         'schedule': crontab(minute='*/5'),  # Every 5 minutes
     },
+    'publish-scheduled-videos': {
+        'task': 'apps.streaming.tasks.tasks.publish_scheduled_videos',
+        'schedule': crontab(minute='*/1'),  # Every minute
+    },
 }

@@ -123,6 +123,12 @@ class Video(BaseModel):
     views_count = models.IntegerField(default=0)
     likes_count = models.IntegerField(default=0)
     dislikes_count = models.IntegerField(default=0)
+    # Scheduled publishing
+    scheduled_at = models.DateTimeField(null=True, blank=True,
+                                        help_text='When to auto-publish (null = publish now or draft)')
+    published_at = models.DateTimeField(null=True, blank=True,
+                                        help_text='When the video was actually published')
+    
     is_published = models.BooleanField(default=False)
     is_live = models.BooleanField(default=False)
     notification_sent = models.BooleanField(default=False, help_text='Whether push notification has been sent for this video')
