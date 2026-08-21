@@ -6,7 +6,15 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger CapRover Build
+      - uses: actions/checkout@v4
+
+      - name: Create deploy tarball
         run: |
-          curl -sS -X POST "${{ secrets.CAPROVER_WEBHOOK_URL }}" --max-time 30
-          echo "✅ CapRover build triggered for Backend"
+          tar --exclude='./.git' --exclude='./.github' -czf deploy.tar .
+
+      - name: Deploy to CapRover
+        uses: caprover/deploy-from-github@v1.2.0
+        with:
+          server: ${{ secrets.CAPROVER_URL }}
+          app: ${{ secrets.CAPROVER_APP_NAME }}
+          password: ${{ secrets.CAPROVER_PASSWORD }}
