@@ -11,8 +11,25 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Debug environment
+        run: |
+          echo "=== System info ==="
+          uname -a
+          echo "=== Current directory ==="
+          pwd
+          echo "=== Files in repo ==="
+          ls -la
+          echo "=== Disk space ==="
+          df -h .
+
       - name: Create deploy tarball
-        run: tar -czf captain-definition.tar.gz .
+        run: |
+          echo "Creating tarball..."
+          tar -czf /tmp/captain-definition.tar.gz .
+          echo "Tarball created:"
+          ls -lh /tmp/captain-definition.tar.gz
+          echo "Tarball contents (first 20 files):"
+          tar -tzf /tmp/captain-definition.tar.gz | head -20
 
       - name: Deploy to CapRover
         env:
@@ -21,23 +38,46 @@ jobs:
           CAPROVER_PASSWORD: ${{ secrets.CAPROVER_PASSWORD }}
         run: |
           echo "=== Deploying Backend to CapRover ==="
+          echo "Server: $CAPROVER_URL"
+          echo "App: $CAPROVER_APP_NAME"
+          echo "Password length: ${#CAPROVER_PASSWORD}"
 
-          TOKEN=$(curl -sS -X POST "$CAPROVER_URL/api/v2/login" \
-            -H "Content-Type: application/json" \
-            -d "{\"password\": \"$CAPROVER_PASSWORD\"}" \
-            | python -c "import json,sys; print(json.load(sys.stdin)['data']['token'])")
-
-          if [ -z "$TOKEN" ]; then
-            echo "ERROR: Failed to get auth token"
+          if [ -z "$CAPROVER_URL" ]; then
+            echo "ERROR: CAPROVER_URL is empty!"
+            exit 1
+          fi
+          if [ -z "$CAPROVER_APP_NAME" ]; then
+            echo "ERROR: CAPROVER_APP_NAME is empty!"
+            exit 1
+          fi
+          if [ -z "$CAPROVER_PASSWORD" ]; then
+            echo "ERROR: CAPROVER_PASSWORD is empty!"
             exit 1
           fi
 
-          echo "Auth token obtained"
+          # Get auth token
+          echo "Logging in to CapRover..."
+          LOGIN_RESPONSE=$(curl -sS -X POST "$CAPROVER_URL/api/v2/login" \
+            -H "Content-Type: application/json" \
+            -d "{\"password\": \"$CAPROVER_PASSWORD\"}")
+          
+          echo "Login response: $LOGIN_RESPONSE"
 
+          TOKEN=$(echo "$LOGIN_RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['token'])")
+
+          if [ -z "$TOKEN" ]; then
+            echo "ERROR: Failed to get auth token!"
+            exit 1
+          fi
+
+          echo "Auth token obtained (length: ${#TOKEN})"
+
+          # Deploy tarball
+          echo "Uploading tarball..."
           RESPONSE=$(curl -sS -X POST "$CAPROVER_URL/api/v2/apps/deploy" \
             -H "Authorization: Bearer $TOKEN" \
             -F "appName=$CAPROVER_APP_NAME" \
-            -F "tarFile=@captain-definition.tar.gz")
+            -F "tarFile=@/tmp/captain-definition.tar.gz")
 
           echo "Deploy response: $RESPONSE"
 
