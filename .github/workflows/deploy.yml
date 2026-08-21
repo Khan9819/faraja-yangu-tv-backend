@@ -8,10 +8,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Create deploy tarball
-        run: |
-          tar --exclude='./.git' --exclude='./.github' -czf deploy.tar .
-
       - name: Deploy to CapRover
         uses: caprover/deploy-from-github@v1.2.0
         with:
