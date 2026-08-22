@@ -62,13 +62,37 @@ jobs:
             -d "{\"password\": \"$CAPROVER_PASSWORD\"}" \
             | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['token'])")
 
-          echo "Polling build status (max ~15 min)..."
-          for i in $(seq 1 90); do
-            STATUS=$(curl -sS --max-time 30 "$CAPROVER_URL/api/v2/user/apps/appData/$CAPROVER_APP_NAME/" \
+          get_state() {
+            curl -sS --max-time 30 "$CAPROVER_URL/api/v2/user/apps/appData/$CAPROVER_APP_NAME/" \
               -H "x-namespace: captain" \
-              -H "x-captain-auth: $TOKEN") || { echo "poll $i: request error, retrying..."; sleep 10; continue; }
-            IS_BUILDING=$(echo "$STATUS" | python3 -c "import json,sys; d=json.load(sys.stdin).get('data') or {}; print(d.get('isBuilding', False))")
-            IS_FAILED=$(echo "$STATUS" | python3 -c "import json,sys; d=json.load(sys.stdin).get('data') or {}; print(d.get('isFailed', False))")
+              -H "x-captain-auth: $TOKEN" \
+              | python3 -c "
+          import json, sys
+          try:
+              d = json.load(sys.stdin).get('data') or {}
+              print(d.get('isBuilding', False), d.get('isFailed', False))
+          except Exception:
+              print('ERR ERR')
+          "
+          }
+
+          echo "Waiting for build to start..."
+          STARTED=False
+          for i in $(seq 1 24); do
+            read IS_BUILDING IS_FAILED <<< "$(get_state)"
+            echo "start-poll $i: isBuilding=$IS_BUILDING isFailed=$IS_FAILED"
+            if [ "$IS_BUILDING" = "True" ]; then STARTED=True; break; fi
+            sleep 5
+          done
+
+          if [ "$STARTED" != "True" ]; then
+            echo "::warning::Build never signalled start; assuming quick finish"
+            exit 0
+          fi
+
+          echo "Polling build status (max ~25 min)..."
+          for i in $(seq 1 150); do
+            read IS_BUILDING IS_FAILED <<< "$(get_state)" || { echo "poll $i: request error, retrying..."; sleep 10; continue; }
             echo "poll $i: isBuilding=$IS_BUILDING isFailed=$IS_FAILED"
             if [ "$IS_FAILED" = "True" ]; then
               echo "::error::CapRover build FAILED — check captain logs in dashboard"
