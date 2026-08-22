@@ -34,12 +34,9 @@ RUN apt-get update && \
     apt-get install -y ffmpeg && \
     rm -rf /var/lib/apt/lists/*
 
-RUN python3.12 -m pip install --break-system-packages --ignore-installed 'uvicorn[standard]' && \
-    python3.12 -m pip install --break-system-packages --ignore-installed -r requirements.txt && \
-    python3.12 -m pip install --break-system-packages --ignore-installed psycopg2-binary==2.9.10
-
-# Install Sentry SDK
-RUN python3.12 -m pip install --break-system-packages --ignore-installed "sentry-sdk[django]"
+RUN python3.12 -m pip install --break-system-packages --no-cache-dir 'uvicorn[standard]==0.52.4' && \
+    python3.12 -m pip install --break-system-packages --no-cache-dir -r requirements.txt && \
+    python3.12 -m pip install --break-system-packages --no-cache-dir psycopg2-binary==2.9.10
 
 # Add xiron to Python path
 ENV PYTHONPATH="/app:${PYTHONPATH}"

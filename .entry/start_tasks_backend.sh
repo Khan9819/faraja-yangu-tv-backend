@@ -3,6 +3,14 @@
 # Ensure timezone is correctly set
 export TZ=Africa/Dar_es_Salaam
 
+# Environment diagnostics: make package drift visible in logs immediately
+echo "=== ENV DIAGNOSTICS (tasks) ==="
+python3.12 --version
+python3.12 -c "import django; print('Django', django.get_version())" || echo "!!! DJANGO IMPORT FAILED !!!"
+python3.12 -c "import rest_framework; print('DRF', rest_framework.VERSION)" || echo "!!! DRF IMPORT FAILED !!!"
+python3.12 -c "import celery; print('Celery', celery.__version__)" || echo "!!! CELERY IMPORT FAILED !!!"
+echo "=== END DIAGNOSTICS ==="
+
 # Create logs directory if it doesn't exist
 mkdir -p logs
 
