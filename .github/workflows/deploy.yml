@@ -1,0 +1,21 @@
+name: Deploy Backend to CapRover
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  trigger-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger CapRover webhook
+        run: |
+          echo "Triggering CapRover deploy for farajayangu-mobile-core-backend..."
+          RESPONSE=$(curl -sS -X POST "${{ secrets.CAPROVER_WEBHOOK_URL }}" --max-time 30)
+          echo "Response: $RESPONSE"
+          if echo "$RESPONSE" | grep -q '"status":1'; then
+            echo "✅ Deploy triggered successfully!"
+          else
+            echo "❌ Deploy trigger failed"
+            exit 1
+          fi
