@@ -3,6 +3,7 @@ name: Deploy Backend to CapRover
 on:
   push:
     branches: [master]
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -11,25 +12,72 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Create deploy tarball
+      - name: Create deploy package
         run: |
-          tar -czf /tmp/captain-definition.tar.gz .
-          echo "Tarball created: $(ls -lh /tmp/captain-definition.tar.gz)"
+          set -e
+          test -f captain-definition || { echo "captain-definition missing!"; exit 1; }
+          tar -czf /tmp/deploy.tar.gz .
+          echo "Tarball created: $(ls -lh /tmp/deploy.tar.gz | awk '{print $5}')"
 
       - name: Deploy to CapRover
         env:
           CAPROVER_URL: ${{ secrets.CAPROVER_URL }}
-          CAPROVER_APP: ${{ secrets.CAPROVER_APP_NAME }}
+          CAPROVER_APP_NAME: ${{ secrets.CAPROVER_APP_NAME }}
           CAPROVER_PASSWORD: ${{ secrets.CAPROVER_PASSWORD }}
         run: |
+          set -euo pipefail
           echo "Logging in..."
-          TOKEN=$(curl -sS -X POST "$CAPROVER_URL/api/v2/login" \
+          LOGIN=$(curl -sSf --max-time 60 -X POST "$CAPROVER_URL/api/v2/login" \
+            -H "Content-Type: application/json" \
+            -d "{\"password\": \"$CAPROVER_PASSWORD\"}")
+          TOKEN=$(echo "$LOGIN" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['token'])")
+          echo "Login OK"
+
+          echo "Uploading deploy package to app: $CAPROVER_APP_NAME"
+          RESP=$(curl -sS --max-time 300 -X POST \
+            "$CAPROVER_URL/api/v2/user/apps/appData/$CAPROVER_APP_NAME/?detached=true" \
+            -H "x-namespace: captain" \
+            -H "x-captain-auth: $TOKEN" \
+            -F "sourceFile=@/tmp/deploy.tar.gz")
+          echo "CapRover response: $RESP"
+
+          echo "$RESP" | python3 -c "
+          import json, sys
+          r = json.load(sys.stdin)
+          if r.get('status') not in (100, 101):
+              print('DEPLOY REJECTED:', r)
+              sys.exit(1)
+          print('Deploy accepted:', r.get('description'))
+          "
+
+      - name: Wait for CapRover build to finish
+        env:
+          CAPROVER_URL: ${{ secrets.CAPROVER_URL }}
+          CAPROVER_APP_NAME: ${{ secrets.CAPROVER_APP_NAME }}
+          CAPROVER_PASSWORD: ${{ secrets.CAPROVER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          TOKEN=$(curl -sSf --max-time 60 -X POST "$CAPROVER_URL/api/v2/login" \
             -H "Content-Type: application/json" \
             -d "{\"password\": \"$CAPROVER_PASSWORD\"}" \
             | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['token'])")
-          
-          echo "Deploying..."
-          curl -sS -X POST "$CAPROVER_URL/api/v2/apps/deploy" \
-            -H "Authorization: Bearer $TOKEN" \
-            -F "appName=$CAPROVER_APP" \
-            -F "tarFile=@/tmp/captain-definition.tar.gz"
+
+          echo "Polling build status (max ~15 min)..."
+          for i in $(seq 1 90); do
+            STATUS=$(curl -sS --max-time 30 "$CAPROVER_URL/api/v2/user/apps/appData/$CAPROVER_APP_NAME/" \
+              -H "x-namespace: captain" \
+              -H "x-captain-auth: $TOKEN") || { echo "poll $i: request error, retrying..."; sleep 10; continue; }
+            IS_BUILDING=$(echo "$STATUS" | python3 -c "import json,sys; d=json.load(sys.stdin).get('data') or {}; print(d.get('isBuilding', False))")
+            IS_FAILED=$(echo "$STATUS" | python3 -c "import json,sys; d=json.load(sys.stdin).get('data') or {}; print(d.get('isFailed', False))")
+            echo "poll $i: isBuilding=$IS_BUILDING isFailed=$IS_FAILED"
+            if [ "$IS_FAILED" = "True" ]; then
+              echo "::error::CapRover build FAILED — check captain logs in dashboard"
+              exit 1
+            fi
+            if [ "$IS_BUILDING" != "True" ]; then
+              echo "Build finished successfully."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::warning::Timed out waiting for build status, but upload was accepted"
