@@ -1286,8 +1286,20 @@ def create_video(request):
     data = {key: value for key, value in request.data.items()}
     
     # Handle scheduled publishing
+    # CMS datetime-local input sends EAT time (UTC+3) as naive datetime.
+    # Convert to UTC before saving so celery beat compares correctly.
+    from datetime import timezone as tz, timedelta
+    EAT = timedelta(hours=3)
     scheduled_at = request.data.get('scheduled_at')
     if scheduled_at:
+        from django.utils.dateparse import parse_datetime
+        parsed = parse_datetime(str(scheduled_at))
+        if parsed is not None:
+            if parsed.tzinfo is None:
+                # Naive datetime from CMS = EAT local time → convert to UTC
+                parsed = parsed.replace(tzinfo=tz(EAT))
+            parsed_utc = parsed.astimezone(tz.utc)
+            data['scheduled_at'] = parsed_utc.strftime('%Y-%m-%dT%H:%M:%SZ')
         # If scheduled, video starts as unpublished until scheduled_at arrives
         data['is_published'] = False
     else:
@@ -1673,8 +1685,19 @@ def update_video(request, pk):
     data['uploaded_by'] = uploaded_by
     
     # Handle scheduled publishing
+    # CMS datetime-local input sends EAT time (UTC+3) as naive datetime.
+    # Convert to UTC before saving so celery beat compares correctly.
+    from datetime import timezone as tz, timedelta
+    from django.utils.dateparse import parse_datetime
+    EAT = timedelta(hours=3)
     scheduled_at = request.data.get('scheduled_at')
     if scheduled_at:
+        parsed = parse_datetime(str(scheduled_at))
+        if parsed is not None:
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=tz(EAT))
+            parsed_utc = parsed.astimezone(tz.utc)
+            data['scheduled_at'] = parsed_utc.strftime('%Y-%m-%dT%H:%M:%SZ')
         data['is_published'] = False
     else:
         data['is_published'] = request.data.get('status', 'draft') == 'published'

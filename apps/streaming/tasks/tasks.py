@@ -1814,6 +1814,15 @@ def publish_scheduled_videos(self):
     close_old_connections()
     now = datetime.now(timezone.utc)
     
+    # Log beat tick so we can confirm the scheduler is running
+    pending = Video.objects.filter(
+        scheduled_at__isnull=False,
+        is_published=False,
+        processing_status='completed',
+        is_ad_media=False,
+    ).count()
+    logger.info(f"publish_scheduled: Beat tick at {now.isoformat()} — {pending} pending videos")
+    
     videos_to_publish = Video.objects.filter(
         scheduled_at__isnull=False,
         scheduled_at__lte=now,
@@ -1857,13 +1866,19 @@ def publish_scheduled_videos(self):
                 metadata=notification_metadata,
             )
             
+            # Mark notification as sent to prevent duplicates
+            video.notification_sent = True
+            video.save(update_fields=['notification_sent'])
+            
             published_count += 1
             logger.info(f"publish_scheduled: Published video {video.id} '{video.title}' (scheduled_at={video.scheduled_at})")
             
         except Exception as e:
-            logger.error(f"publish_scheduled: Failed to publish video {video.id}: {e}")
+            logger.error(f"publish_scheduled: Failed to publish video {video.id}: {e}", exc_info=True)
     
     if published_count > 0:
         logger.info(f"publish_scheduled: Published {published_count} scheduled videos")
+    else:
+        logger.debug(f"publish_scheduled: No videos to publish at {now.isoformat()}")
     
     return {'published': published_count}
