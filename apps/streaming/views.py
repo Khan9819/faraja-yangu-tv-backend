@@ -3179,7 +3179,9 @@ def publish_now(request, video_id):
     now = timezone.now()
     video.is_published = True
     video.published_at = now
-    video.save(update_fields=['is_published', 'published_at'])
+    video.scheduled_at = None  # Clear schedule after manual publish
+    video.notification_sent = True
+    video.save(update_fields=['is_published', 'published_at', 'scheduled_at', 'notification_sent'])
     
     # Send notification
     category_name = getattr(video.category, 'name', 'Uncategorized') if video.category else 'Uncategorized'
