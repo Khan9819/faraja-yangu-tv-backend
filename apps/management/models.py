@@ -23,7 +23,7 @@ class PlatformSettings(BaseModel):
     platform_name = models.CharField(max_length=255, default='FarajaYangu TV')
     language = models.CharField(max_length=50, default='English')
     # app_version = latest_version inayotumiwa na in-app update (management/app-version/)
-    app_version = models.CharField(max_length=50, default='1.1.1')
+    app_version = models.CharField(max_length=50, default='1.1.3')
     minimum_version = models.CharField(max_length=50, default='1.1.0')
     release_notes = models.JSONField(default=list, blank=True)
     update_url = models.CharField(
